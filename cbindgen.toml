@@ -1,0 +1,9 @@
+language = "C"
+documentation = true
+
+[enum]
+rename_variants = "ScreamingSnakeCase"
+
+[export.rename]
+"Response" = "RESPONSE"
+"Mode" = "MODE"
