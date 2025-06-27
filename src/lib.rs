@@ -32,8 +32,8 @@ impl<T> ResultExt<T> for HidResult<T> {
     }
 }
 
-const VENDOR_ID: u16 = 0xcafe;
-const PRODUCT_ID: u16 = 0x4004;
+const VENDOR_ID: u16 = 0x0483;
+const PRODUCT_ID: u16 = 0x5750;
 
 /// Modes supported by the display controller. 
 /// 
@@ -62,7 +62,7 @@ const PRODUCT_ID: u16 = 0x4004;
 ///
 /// *AutoErrorDiffusion*: Like `AutoNoDither`, but uses error diffusion to 
 /// approximate grey values during for image updates.
-#[repr(u16)]
+#[repr(i16)]
 #[pyclass(eq, eq_int)]
 #[derive(Clone, Copy, PartialEq)]
 pub enum Mode {
@@ -151,15 +151,16 @@ impl Display {
         buf.put_i16(area.y0);
         buf.put_i16(area.x1);
         buf.put_i16(area.y1);
+        buf.put_u8(0x00); // id value, unused.
         buf.put_u16(crc16::State::<crc16::XMODEM>::calculate(&buf));
         self.device.write(&buf).to_py_err()?;
 
         let mut response: [u8; 32] = [0; 32];
         self.device.read_timeout(&mut response, 200).to_py_err()?;
         match LittleEndian::read_u16(&response) {
-            0x00 => Err(PyTypeError::new_err("something went wrong")),
+            0x00 => Err(PyTypeError::new_err("invalid command")),
             0x01 => Err(PyTypeError::new_err("checksum incorrect")),
-            _ => Ok(()),
+            _ => Ok(())
         }
     }
 
@@ -169,22 +170,24 @@ impl Display {
     fn redraw(&self, area: &Rect) -> PyResult<()> {
         let mut buf = BytesMut::with_capacity(16);
         buf.put_i16(USBCMD_REDRAW);
-        buf.put_i16(0x00); // Dummy param value
+        buf.put_i16(0x0000); // Dummy param value
         buf.put_i16(area.x0);
         buf.put_i16(area.y0);
         buf.put_i16(area.x1);
         buf.put_i16(area.y1);
-        buf.put_u16(crc16::State::<crc16::XMODEM>::calculate(&buf));
+        buf.put_u8(0x00); // id value, unused.
+        let chksum= crc16::State::<crc16::XMODEM>::calculate(&buf);
+        buf.put_u16(chksum);
         self.device.write(&buf).to_py_err()?;
 
         let mut response: [u8; 16] = [0; 16];
         self.device.read_timeout(&mut response, 200).to_py_err()?;
         match LittleEndian::read_u16(&response) {
-            0x00 => Err(PyTypeError::new_err("something went wrong")),
+            0x00 => Err(PyTypeError::new_err("invalid command")),
             0x01 => Err(PyTypeError::new_err("checksum incorrect")),
-            _ => Ok(()),
+            _ => Ok(())
         }
-    }
+    } 
 }
 
 // C API
