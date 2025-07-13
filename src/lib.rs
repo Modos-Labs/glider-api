@@ -15,6 +15,7 @@ use byteorder::{ByteOrder, LittleEndian};
 use bytes::{BufMut, BytesMut};
 use hidapi::{HidApi, HidDevice, HidError, HidResult};
 use pyo3::{exceptions::PyTypeError, prelude::*};
+// use serialport::{available_ports, SerialPortType, SerialPort};
 
 trait ResultExt<T> {
     fn to_py_err(self) -> PyResult<T>;
@@ -28,6 +29,16 @@ impl<T> ResultExt<T> for HidResult<T> {
                 HidError::HidApiError { message } => Err(PyTypeError::new_err(message)),
                 _ => Err(PyTypeError::new_err("something went wrong")),
             },
+        }
+    }
+}
+
+
+impl<T> ResultExt<T> for serialport::Result<T> {
+    fn to_py_err(self) -> PyResult<T> {
+        match self {
+            Ok(x) => Ok(x),
+            Err(_e) => Err(PyTypeError::new_err("something went wrong")),
         }
     }
 }
@@ -125,10 +136,12 @@ impl Rect {
 #[pyclass(frozen)]
 pub struct Display {
     device: HidDevice,
+   // serial: Option<Box<dyn SerialPort>>
 }
 
 unsafe impl Send for Display {}
 unsafe impl Sync for Display {}
+
 
 #[pymethods]
 impl Display {
@@ -138,7 +151,16 @@ impl Display {
     fn new() -> PyResult<Self> {
         let api = HidApi::new_without_enumerate().to_py_err()?;
         let device = api.open(VENDOR_ID, PRODUCT_ID).to_py_err()?;
-        Ok(Self { device })
+
+        // let ports = available_ports().to_py_err()?;
+        // for p in ports {
+        //     match p.port_type {
+        //         SerialPortType::UsbPort(info) => {
+        //         }
+        //         _ => {}
+        //     };
+        // }
+        Ok(Self { device, /* serial: None */ })
     }
 
     /// Sets the mode for a region of the display. Note that this will always
@@ -147,11 +169,11 @@ impl Display {
         let mut buf = BytesMut::with_capacity(16);
         buf.put_i16(USBCMD_SETMODE);
         buf.put_i16(mode.clone() as i16);
-        buf.put_i16(area.x0);
-        buf.put_i16(area.y0);
-        buf.put_i16(area.x1);
-        buf.put_i16(area.y1);
-        buf.put_u8(0x00); // id value, unused.
+        buf.put_u8(0x00); // WORKAROUND: Alignment is decoded incorrectly in fw. 
+        buf.put_i16_le(area.x0);
+        buf.put_i16_le(area.y0);
+        buf.put_i16_le(area.x1);
+        buf.put_i16_le(area.y1);
         buf.put_u16(crc16::State::<crc16::XMODEM>::calculate(&buf));
         self.device.write(&buf).to_py_err()?;
 
@@ -169,13 +191,15 @@ impl Display {
     /// ghosting.
     fn redraw(&self, area: &Rect) -> PyResult<()> {
         let mut buf = BytesMut::with_capacity(16);
+
         buf.put_i16(USBCMD_REDRAW);
         buf.put_i16(0x0000); // Dummy param value
-        buf.put_i16(area.x0);
-        buf.put_i16(area.y0);
-        buf.put_i16(area.x1);
-        buf.put_i16(area.y1);
-        buf.put_u8(0x00); // id value, unused.
+        buf.put_u8(0x00); // WORKAROUND: Alignment is decoded incorrectly in fw. 
+        buf.put_i16_le(area.x0);
+        buf.put_i16_le(area.y0);
+        buf.put_i16_le(area.x1);
+        buf.put_i16_le(area.y1);
+                 
         let chksum= crc16::State::<crc16::XMODEM>::calculate(&buf);
         buf.put_u16(chksum);
         self.device.write(&buf).to_py_err()?;
@@ -187,7 +211,7 @@ impl Display {
             0x01 => Err(PyTypeError::new_err("checksum incorrect")),
             _ => Ok(())
         }
-    } 
+    }  
 }
 
 // C API

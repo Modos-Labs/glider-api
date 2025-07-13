@@ -3,6 +3,7 @@ _static
 _templates
 .github
 .venv
+venv
 include
 target
 Cargo.lock
