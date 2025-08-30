@@ -7,6 +7,9 @@ exposes a USB HID-based interface for Rust, Python, and C using
 [cbindgen](https://github.com/mozilla/cbindgen). It also includes documentation
 generation using [Sphinx](https://www.sphinx-doc.org/) for Python and rustdoc for Rust. C documentation is provided in the header file.
 
+Here's a short video showing the SDK in action, setting different refresh modes for different sections of the screen:
+[![Video of SDK in action](https://img.youtube.com/vi/AoDYEZE7gDA/0.jpg)](https://www.youtube.com/watch?v=AoDYEZE7gDA)
+
 Note: this package isn't yet installable as a wheel for python (e.g. via `pip`)
 or as a crate for Rust (e.g. via `cargo`) so you'll need to build it yourself.
 
