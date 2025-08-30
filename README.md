@@ -15,6 +15,7 @@ or as a crate for Rust (e.g. via `cargo`) so you'll need to build it yourself.
 ### Prerequisites:
 - Python (min version 3.12)
 - Rust (tested with 1.89.0)
+- Sphinx (for doc generation)
 - Linux only: pkgconfig and libudev-dev
 
 To install the API, clone this directory and run:
@@ -28,6 +29,7 @@ To generate the documentation, you'll need to set up a virtual environment with 
 python -m venv ./venv
 ./venv/scripts/activate # or `source venv/bin/activate`
 pip install maturin
+pip install myst-parser
 maturin develop
 make html
 ```
