@@ -48,3 +48,7 @@ To generate Rust documentation, simply run `cargo doc`.
 ## Linux Permissions
 
 By default, most Linux distributions require extended permission to access HID devices (e.g. `/dev/hiidraw*`). For development purposes, it's fine to set the permissions for your Modos device directly, e.g. `sudo chmod 0666 /dev/hidraw7`, however for a more complete solution, you'll need to configure `udev` to allow access to your device. For more information, check out the [udev documentation](https://www.kernel.org/pub/linux/utils/kernel/hotplug/udev/udev.html) and [this StackExchange post](https://askubuntu.com/questions/15570/configure-udev-to-change-permissions-on-usb-hid-device).
+
+## Contributing and Community
+
+For help with glider-api, or to get involved with contributing to the project, come join us on our [Discord](https://discord.gg/6ktE6VxSyh).
