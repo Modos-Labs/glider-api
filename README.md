@@ -11,6 +11,8 @@ Here's a short video showing the SDK in action, setting different refresh modes 
 
 [![Video of SDK in action](https://img.youtube.com/vi/AoDYEZE7gDA/0.jpg)](https://www.youtube.com/watch?v=AoDYEZE7gDA)
 
+![Image of zone settings for the screen in the video](images/glider-api-overlay-example-1.jpg)
+
 Note: this package isn't yet installable as a wheel for python (e.g. via `pip`)
 or as a crate for Rust (e.g. via `cargo`) so you'll need to build it yourself.
 
