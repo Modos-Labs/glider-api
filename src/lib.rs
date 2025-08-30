@@ -15,7 +15,6 @@ use byteorder::{ByteOrder, LittleEndian};
 use bytes::{BufMut, BytesMut};
 use hidapi::{HidApi, HidDevice, HidError, HidResult};
 use pyo3::{exceptions::PyTypeError, prelude::*};
-// use serialport::{available_ports, SerialPortType, SerialPort};
 
 trait ResultExt<T> {
     fn to_py_err(self) -> PyResult<T>;
@@ -135,8 +134,7 @@ impl Rect {
 /// Core structure defining the display and possible interactions.
 #[pyclass(frozen)]
 pub struct Display {
-    device: HidDevice,
-   // serial: Option<Box<dyn SerialPort>>
+    device: HidDevice
 }
 
 unsafe impl Send for Display {}
@@ -152,15 +150,7 @@ impl Display {
         let api = HidApi::new_without_enumerate().to_py_err()?;
         let device = api.open(VENDOR_ID, PRODUCT_ID).to_py_err()?;
 
-        // let ports = available_ports().to_py_err()?;
-        // for p in ports {
-        //     match p.port_type {
-        //         SerialPortType::UsbPort(info) => {
-        //         }
-        //         _ => {}
-        //     };
-        // }
-        Ok(Self { device, /* serial: None */ })
+        Ok(Self { device })
     }
 
     /// Sets the mode for a region of the display. Note that this will always
