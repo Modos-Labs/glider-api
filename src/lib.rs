@@ -15,6 +15,7 @@ use byteorder::{ByteOrder, LittleEndian};
 use bytes::{BufMut, BytesMut};
 use hidapi::{HidApi, HidDevice, HidError, HidResult};
 use pyo3::{exceptions::PyTypeError, prelude::*};
+use std::sync::Mutex;
 
 trait ResultExt<T> {
     fn to_py_err(self) -> PyResult<T>;
@@ -131,14 +132,18 @@ impl Rect {
     }
 }
 
+/// Wrapper that marks HidDevice as Send.
+///
+/// Safety: The C hidapi library serializes concurrent access to a device handle
+/// internally, so it is safe to send an HidDevice to another thread.
+struct SendableDevice(HidDevice);
+unsafe impl Send for SendableDevice {}
+
 /// Core structure defining the display and possible interactions.
 #[pyclass(frozen)]
 pub struct Display {
-    device: HidDevice,
+    device: Mutex<SendableDevice>,
 }
-
-unsafe impl Send for Display {}
-unsafe impl Sync for Display {}
 
 #[pymethods]
 impl Display {
@@ -151,7 +156,7 @@ impl Display {
         let api = HidApi::new_without_enumerate().to_py_err()?;
         let device = api.open(VENDOR_ID, PRODUCT_ID).to_py_err()?;
 
-        Ok(Self { device })
+        Ok(Self { device: Mutex::new(SendableDevice(device)) })
     }
 
     /// Sets the mode for a region of the display. Note that this will always
@@ -166,10 +171,11 @@ impl Display {
         buf.put_i16_le(area.x1);
         buf.put_i16_le(area.y1);
         buf.put_u16(crc16::State::<crc16::XMODEM>::calculate(&buf));
-        self.device.write(&buf).to_py_err()?;
+        let device = self.device.lock().unwrap();
+        device.0.write(&buf).to_py_err()?;
 
         let mut response: [u8; 32] = [0; 32];
-        self.device.read_timeout(&mut response, 200).to_py_err()?;
+        device.0.read_timeout(&mut response, 200).to_py_err()?;
         match LittleEndian::read_u16(&response) {
             0x00 => Err(PyTypeError::new_err("invalid command")),
             0x01 => Err(PyTypeError::new_err("checksum incorrect")),
@@ -193,10 +199,11 @@ impl Display {
 
         let chksum = crc16::State::<crc16::XMODEM>::calculate(&buf);
         buf.put_u16(chksum);
-        self.device.write(&buf).to_py_err()?;
+        let device = self.device.lock().unwrap();
+        device.0.write(&buf).to_py_err()?;
 
         let mut response: [u8; 16] = [0; 16];
-        self.device.read_timeout(&mut response, 200).to_py_err()?;
+        device.0.read_timeout(&mut response, 200).to_py_err()?;
         match LittleEndian::read_u16(&response) {
             0x00 => Err(PyTypeError::new_err("invalid command")),
             0x01 => Err(PyTypeError::new_err("checksum incorrect")),
