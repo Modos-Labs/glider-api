@@ -3,7 +3,7 @@
 //! This library has a C interface as well as Python bindings. Currently, all
 //! methods return Pyo3's `PyResult`; in the future we plan to add a simplified
 //! return type for Rust-exclusive use.
-//! 
+//!
 //! Example
 //! ```rust
 //! use glider_api::{Mode, Rect, Display}
@@ -32,7 +32,6 @@ impl<T> ResultExt<T> for HidResult<T> {
     }
 }
 
-
 impl<T> ResultExt<T> for serialport::Result<T> {
     fn to_py_err(self) -> PyResult<T> {
         match self {
@@ -42,35 +41,35 @@ impl<T> ResultExt<T> for serialport::Result<T> {
     }
 }
 
-const VENDOR_ID: u16 = 0x0483;
-const PRODUCT_ID: u16 = 0x5750;
+const VENDOR_ID: u16 = 0x1209;
+const PRODUCT_ID: u16 = 0xae86;
 
-/// Modes supported by the display controller. 
-/// 
+/// Modes supported by the display controller.
+///
 /// *ManualLUTNoDither*: 1-bit mode with a custom look-up-table (LUT). Note that
 /// this API does not support uploading manual LUTs at this time.
 ///
-/// *ManualLUTErrorDiffusion*: 1-bit mode with a custom look-up-table (LUT), 
-/// using error diffusion dithering to approximate grey values. Note that this 
+/// *ManualLUTErrorDiffusion*: 1-bit mode with a custom look-up-table (LUT),
+/// using error diffusion dithering to approximate grey values. Note that this
 /// API does not support uploading manual LUTs at this time.
 ///
-/// *FastMonoNoDither*: 1-bit mode. All gray values are converted to either 
+/// *FastMonoNoDither*: 1-bit mode. All gray values are converted to either
 /// black or white.
 ///
 /// *FastMonoBayer*: 1-bit mode with Bayer dithering.
 ///
-/// *FastMonoBlueNoise*: 1-bit mode with dithering based on a blue noise 
+/// *FastMonoBlueNoise*: 1-bit mode with dithering based on a blue noise
 /// pattern.
 ///
-/// *FastGrey*: Optimized 4-level grey mode. Note this mode has a much slower 
+/// *FastGrey*: Optimized 4-level grey mode. Note this mode has a much slower
 /// refresh rate compared to all other modes.
 ///
-/// *AutoNoDither*: Optimized display mode that switches between 1-bit and gray 
-/// values depending on the speed of update. When the input image is changed, it 
+/// *AutoNoDither*: Optimized display mode that switches between 1-bit and gray
+/// values depending on the speed of update. When the input image is changed, it
 /// switches to 1-bit mode with no dithering and does the update. When the image
 /// hasn’t changed for a while, it re-renders the image in greyscale.
 ///
-/// *AutoErrorDiffusion*: Like `AutoNoDither`, but uses error diffusion to 
+/// *AutoErrorDiffusion*: Like `AutoNoDither`, but uses error diffusion to
 /// approximate grey values during for image updates.
 #[repr(i16)]
 #[pyclass(eq, eq_int)]
@@ -80,8 +79,8 @@ pub enum Mode {
     /// not support uploading manual LUTs at this time.
     ManualLUTNoDither = 0,
 
-    /// 1-bit mode with a custom look-up-table (LUT), using error diffusion 
-    /// dithering to approximate grey values. Note that this API does not 
+    /// 1-bit mode with a custom look-up-table (LUT), using error diffusion
+    /// dithering to approximate grey values. Note that this API does not
     /// support uploading manual LUTs at this time.
     ManualLUTErrorDiffusion = 1,
 
@@ -94,13 +93,13 @@ pub enum Mode {
     /// 1-bit mode with dithering based on a blue noise pattern.
     FastMonoBlueNoise = 4,
 
-    /// Optimized 4-level grey mode. Note this mode has a much slower refresh 
+    /// Optimized 4-level grey mode. Note this mode has a much slower refresh
     /// rate compared to all other modes.
     FastGrey = 5,
 
     /// Optimized display mode that switches between 1-bit and gray values
-    /// depending on the speed of update. When the input image is changed, it 
-    /// switches to 1-bit mode with no dithering and does the update. When the 
+    /// depending on the speed of update. When the input image is changed, it
+    /// switches to 1-bit mode with no dithering and does the update. When the
     /// image hasn’t changed for a while, it re-renders the image in greyscale.
     AutoNoDither = 6,
 
@@ -134,16 +133,14 @@ impl Rect {
 /// Core structure defining the display and possible interactions.
 #[pyclass(frozen)]
 pub struct Display {
-    device: HidDevice
+    device: HidDevice,
 }
 
 unsafe impl Send for Display {}
 unsafe impl Sync for Display {}
 
-
 #[pymethods]
 impl Display {
-
     /// Connects to the display and returns a `Display` struct for control.
     #[new]
     fn new() -> PyResult<Self> {
@@ -159,7 +156,7 @@ impl Display {
         let mut buf = BytesMut::with_capacity(16);
         buf.put_i16(USBCMD_SETMODE);
         buf.put_i16(mode.clone() as i16);
-        buf.put_u8(0x00); // WORKAROUND: Alignment is decoded incorrectly in fw. 
+        buf.put_u8(0x00); // WORKAROUND: Alignment is decoded incorrectly in fw.
         buf.put_i16_le(area.x0);
         buf.put_i16_le(area.y0);
         buf.put_i16_le(area.x1);
@@ -172,7 +169,7 @@ impl Display {
         match LittleEndian::read_u16(&response) {
             0x00 => Err(PyTypeError::new_err("invalid command")),
             0x01 => Err(PyTypeError::new_err("checksum incorrect")),
-            _ => Ok(())
+            _ => Ok(()),
         }
     }
 
@@ -184,13 +181,13 @@ impl Display {
 
         buf.put_i16(USBCMD_REDRAW);
         buf.put_i16(0x0000); // Dummy param value
-        buf.put_u8(0x00); // WORKAROUND: Alignment is decoded incorrectly in fw. 
+        buf.put_u8(0x00); // WORKAROUND: Alignment is decoded incorrectly in fw.
         buf.put_i16_le(area.x0);
         buf.put_i16_le(area.y0);
         buf.put_i16_le(area.x1);
         buf.put_i16_le(area.y1);
-                 
-        let chksum= crc16::State::<crc16::XMODEM>::calculate(&buf);
+
+        let chksum = crc16::State::<crc16::XMODEM>::calculate(&buf);
         buf.put_u16(chksum);
         self.device.write(&buf).to_py_err()?;
 
@@ -199,9 +196,9 @@ impl Display {
         match LittleEndian::read_u16(&response) {
             0x00 => Err(PyTypeError::new_err("invalid command")),
             0x01 => Err(PyTypeError::new_err("checksum incorrect")),
-            _ => Ok(())
+            _ => Ok(()),
         }
-    }  
+    }
 }
 
 // C API
