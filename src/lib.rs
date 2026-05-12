@@ -124,8 +124,9 @@ pub struct Rect {
 
 #[pymethods]
 impl Rect {
+    /// Define a rectangular area from the four provided coordinates.
     #[new]
-    fn new(x0: i16, y0: i16, x1: i16, y1: i16) -> Self {
+    pub fn new(x0: i16, y0: i16, x1: i16, y1: i16) -> Self {
         Self { x0, y0, x1, y1 }
     }
 }
@@ -142,8 +143,11 @@ unsafe impl Sync for Display {}
 #[pymethods]
 impl Display {
     /// Connects to the display and returns a `Display` struct for control.
+    ///
+    /// NOTE: This disables device discovery in the HidApi crate. If you are using another
+    /// that also uses HidApi, this may lead to conflicts.
     #[new]
-    fn new() -> PyResult<Self> {
+    pub fn new() -> PyResult<Self> {
         let api = HidApi::new_without_enumerate().to_py_err()?;
         let device = api.open(VENDOR_ID, PRODUCT_ID).to_py_err()?;
 
@@ -152,7 +156,7 @@ impl Display {
 
     /// Sets the mode for a region of the display. Note that this will always
     /// force a redraw of the region.
-    fn set_mode(&self, mode: &Mode, area: &Rect) -> PyResult<()> {
+    pub fn set_mode(&self, mode: &Mode, area: &Rect) -> PyResult<()> {
         let mut buf = BytesMut::with_capacity(16);
         buf.put_i16(USBCMD_SETMODE);
         buf.put_i16(mode.clone() as i16);
@@ -176,7 +180,7 @@ impl Display {
     /// Force a redraw of the region. This will trigger a "flash" of the area
     /// from black to white before setting the image, in order to clear any
     /// ghosting.
-    fn redraw(&self, area: &Rect) -> PyResult<()> {
+    pub fn redraw(&self, area: &Rect) -> PyResult<()> {
         let mut buf = BytesMut::with_capacity(16);
 
         buf.put_i16(USBCMD_REDRAW);
