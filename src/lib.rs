@@ -108,8 +108,15 @@ pub enum Mode {
     AutoErrorDiffusion = 7,
 }
 
+const REPORT_ID_CONTROL: u8 = 5;
 const USBCMD_REDRAW: i16 = 0x04;
 const USBCMD_SETMODE: i16 = 0x05;
+const USBCMD_RECV: u8 = 0x08;
+
+// HID packet size the firmware expects. Data chunks fill all but the first
+// byte (report ID), giving 63 bytes of payload per write.
+const PACKET_SIZE: usize = 64;
+const DATA_CHUNK_SIZE: usize = PACKET_SIZE - 1;
 
 #[repr(C)]
 #[pyclass]
@@ -202,6 +209,92 @@ impl Display {
             0x01 => Err(PyTypeError::new_err("checksum incorrect")),
             _ => Ok(()),
         }
+    }
+
+    /// Upload a waveform file to the display controller's flash storage.
+    ///
+    /// Waveform files calibrate the e-ink panel's driving voltages and timing.
+    /// Uploading a panel-specific waveform is required before using the
+    /// `ManualLUTNoDither` and `ManualLUTErrorDiffusion` modes.
+    ///
+    /// `filename` is the destination path on the controller's SPIFFS filesystem
+    /// (e.g. `"/waveform.wbf"`). `data` is the raw waveform file content.
+    ///
+    /// The transfer sends the file in 63-byte HID chunks. Large files may take
+    /// several seconds. The waveform persists across reboots.
+    ///
+    /// Use the waveform tools in the firmware repository's `utils/` directory
+    /// to convert vendor-supplied `.wbf` files into the expected format.
+    pub fn upload_waveform(&self, filename: &str, data: &[u8]) -> PyResult<()> {
+        let file_size = data.len() as u32;
+        let file_crc = crc16::State::<crc16::XMODEM>::calculate(data) as u32;
+        let filename_bytes = filename.as_bytes();
+
+        // Announce the transfer: tell the firmware the filename length, total
+        // file size, and expected CRC. Size and CRC are split across the x/y
+        // coordinate fields as two LE u16 halves each.
+        let cmd = build_recv_packet(filename_bytes.len() as u16, file_size, file_crc);
+        self.device.write(&cmd).to_py_err()?;
+        let mut response = [0u8; 32];
+        self.device.read_timeout(&mut response, 200).to_py_err()?;
+        parse_recv_response(&response)?;
+
+        // Stream filename, then file data, in 63-byte raw chunks.
+        send_raw_chunks(&self.device, filename_bytes).to_py_err()?;
+        send_raw_chunks(&self.device, data).to_py_err()?;
+
+        Ok(())
+    }
+}
+
+// USBCMD_RECV command packet layout (matches utils/flash_tool/main.py):
+//   [0]     REPORT_ID_CONTROL
+//   [1]     USBCMD_RECV (u8)
+//   [2-3]   filename_len (LE u16)
+//   [4-5]   file_size low 16 bits (LE u16)
+//   [6-7]   file_size high 16 bits (LE u16)
+//   [8-9]   file_crc low 16 bits (LE u16)
+//   [10-11] file_crc high 16 bits (LE u16)
+//   [12-13] ID = 0 (LE u16)
+//   [14-15] packet CRC16-XMODEM over buf[1..14] (LE u16)
+//   [16-63] zero padding
+fn build_recv_packet(filename_len: u16, file_size: u32, file_crc: u32) -> [u8; PACKET_SIZE] {
+    let mut buf = BytesMut::with_capacity(PACKET_SIZE);
+    buf.put_u8(REPORT_ID_CONTROL);
+    buf.put_u8(USBCMD_RECV);
+    buf.put_u16_le(filename_len);
+    buf.put_u16_le((file_size & 0xFFFF) as u16);
+    buf.put_u16_le((file_size >> 16) as u16);
+    buf.put_u16_le((file_crc & 0xFFFF) as u16);
+    buf.put_u16_le((file_crc >> 16) as u16);
+    buf.put_u16_le(0x0000); // ID
+    let pkt_crc = crc16::State::<crc16::XMODEM>::calculate(&buf[1..]);
+    buf.put_u16_le(pkt_crc);
+    buf.resize(PACKET_SIZE, 0u8);
+    buf.as_ref().try_into().unwrap()
+}
+
+// Send arbitrary bytes to the device in DATA_CHUNK_SIZE (63-byte) pieces.
+// Each write is a 64-byte packet: [REPORT_ID_CONTROL | data... | zero-padding].
+// No per-chunk response is read; the firmware buffers data and writes to flash
+// when the buffer fills or the transfer completes.
+fn send_raw_chunks(device: &HidDevice, data: &[u8]) -> HidResult<()> {
+    for chunk in data.chunks(DATA_CHUNK_SIZE) {
+        let mut pkt = [0u8; PACKET_SIZE];
+        pkt[0] = REPORT_ID_CONTROL;
+        pkt[1..1 + chunk.len()].copy_from_slice(chunk);
+        device.write(&pkt)?;
+    }
+    Ok(())
+}
+
+// Parse the USBCMD_RECV acknowledgement. Response byte 0 is REPORT_ID_CONTROL;
+// the USBRET_* return value is at byte 1.
+fn parse_recv_response(response: &[u8]) -> PyResult<()> {
+    match response[1] {
+        0x00 => Err(PyTypeError::new_err("waveform upload rejected by firmware")),
+        0x01 => Err(PyTypeError::new_err("waveform upload: checksum incorrect")),
+        _ => Ok(()),
     }
 }
 
