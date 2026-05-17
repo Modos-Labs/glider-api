@@ -107,8 +107,9 @@ pub enum Mode {
     AutoErrorDiffusion = 7,
 }
 
-const USBCMD_REDRAW: i16 = 0x04;
-const USBCMD_SETMODE: i16 = 0x05;
+const REPORT_ID_CONTROL: u8 = 5;
+const USBCMD_REDRAW: u8 = 0x04;
+const USBCMD_SETMODE: u8 = 0x05;
 
 #[repr(C)]
 #[pyclass]
@@ -156,15 +157,7 @@ impl Display {
     /// Sets the mode for a region of the display. Note that this will always
     /// force a redraw of the region.
     pub fn set_mode(&self, mode: &Mode, area: &Rect) -> PyResult<()> {
-        let mut buf = BytesMut::with_capacity(16);
-        buf.put_i16(USBCMD_SETMODE);
-        buf.put_i16(mode.clone() as i16);
-        buf.put_u8(0x00); // WORKAROUND: Alignment is decoded incorrectly in fw.
-        buf.put_i16_le(area.x0);
-        buf.put_i16_le(area.y0);
-        buf.put_i16_le(area.x1);
-        buf.put_i16_le(area.y1);
-        buf.put_u16(crc16::State::<crc16::XMODEM>::calculate(&buf));
+        let buf = build_display_packet(USBCMD_SETMODE, *mode as u16, area);
         self.device.write(&buf).to_py_err()?;
 
         let mut response: [u8; 32] = [0; 32];
@@ -176,24 +169,35 @@ impl Display {
     /// from black to white before setting the image, in order to clear any
     /// ghosting.
     pub fn redraw(&self, area: &Rect) -> PyResult<()> {
-        let mut buf = BytesMut::with_capacity(16);
-
-        buf.put_i16(USBCMD_REDRAW);
-        buf.put_i16(0x0000); // Dummy param value
-        buf.put_u8(0x00); // WORKAROUND: Alignment is decoded incorrectly in fw.
-        buf.put_i16_le(area.x0);
-        buf.put_i16_le(area.y0);
-        buf.put_i16_le(area.x1);
-        buf.put_i16_le(area.y1);
-
-        let chksum = crc16::State::<crc16::XMODEM>::calculate(&buf);
-        buf.put_u16(chksum);
+        let buf = build_display_packet(USBCMD_REDRAW, 0x0000, area);
         self.device.write(&buf).to_py_err()?;
 
         let mut response: [u8; 16] = [0; 16];
         self.device.read_timeout(&mut response, 200).to_py_err()?;
         parse_response(&response)
     }
+}
+
+// Packet layout (firmware e7fa3c01, Dec 27 2025):
+//   [0]     REPORT_ID_CONTROL   (hidapi sends as HID report ID)
+//   [1]     cmd (u8)
+//   [2-3]   param (LE u16)
+//   [4-5]   x0   [6-7] y0   [8-9] x1   [10-11] y1  (LE i16 each)
+//   [12-13] ID = 0 (LE u16)
+//   [14-15] CRC16-XMODEM over buf[1..14] (LE u16)
+fn build_display_packet(cmd: u8, param: u16, area: &Rect) -> BytesMut {
+    let mut buf = BytesMut::with_capacity(16);
+    buf.put_u8(REPORT_ID_CONTROL);
+    buf.put_u8(cmd);
+    buf.put_u16_le(param);
+    buf.put_i16_le(area.x0);
+    buf.put_i16_le(area.y0);
+    buf.put_i16_le(area.x1);
+    buf.put_i16_le(area.y1);
+    buf.put_u16_le(0x0000); // ID
+    let crc = crc16::State::<crc16::XMODEM>::calculate(&buf[1..]);
+    buf.put_u16_le(crc);
+    buf
 }
 
 // Firmware (Dec 27 2025, commit e7fa3c01) prepends REPORT_ID_CONTROL (5) as
