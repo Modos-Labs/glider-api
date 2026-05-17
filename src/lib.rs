@@ -108,6 +108,7 @@ pub enum Mode {
 }
 
 const REPORT_ID_CONTROL: u8 = 5;
+const USBCMD_RESET: u8 = 0x00;
 const USBCMD_REDRAW: u8 = 0x04;
 const USBCMD_SETMODE: u8 = 0x05;
 
@@ -175,6 +176,19 @@ impl Display {
         let mut response: [u8; 16] = [0; 16];
         self.device.read_timeout(&mut response, 200).to_py_err()?;
         parse_response(&response)
+    }
+
+    /// Reboot the display controller firmware.
+    ///
+    /// The firmware powers down the e-ink panel and triggers an immediate MCU
+    /// reset. The USB connection drops as soon as the reset fires — no response
+    /// is returned and this `Display` handle is invalid after the call returns.
+    /// Allow a few seconds before reconnecting.
+    pub fn reset(&self) -> PyResult<()> {
+        let zero = Rect::new(0, 0, 0, 0);
+        let buf = build_display_packet(USBCMD_RESET, 0x0000, &zero);
+        self.device.write(&buf).to_py_err()?;
+        Ok(())
     }
 }
 
