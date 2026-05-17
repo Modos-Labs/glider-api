@@ -267,25 +267,13 @@ impl Display {
     /// Raises `TypeError` on USB communication errors or if the firmware
     /// rejects the command.
     pub fn set_mode(&self, mode: &Mode, area: &Rect) -> PyResult<()> {
-        let mut buf = BytesMut::with_capacity(16);
-        buf.put_i16(USBCMD_SETMODE);
-        buf.put_i16(mode.clone() as i16);
-        buf.put_u8(0x00); // WORKAROUND: Alignment is decoded incorrectly in fw.
-        buf.put_i16_le(area.x0);
-        buf.put_i16_le(area.y0);
-        buf.put_i16_le(area.x1);
-        buf.put_i16_le(area.y1);
-        buf.put_u16(crc16::State::<crc16::XMODEM>::calculate(&buf));
+        let buf = build_set_mode_packet(mode, area);
         let device = self.device.lock().unwrap();
         device.0.write(&buf).to_py_err()?;
 
         let mut response: [u8; 32] = [0; 32];
         device.0.read_timeout(&mut response, 200).to_py_err()?;
-        match LittleEndian::read_u16(&response) {
-            0x00 => Err(PyTypeError::new_err("invalid command")),
-            0x01 => Err(PyTypeError::new_err("checksum incorrect")),
-            _ => Ok(()),
-        }
+        parse_response(&response)
     }
 
     /// Force a hard refresh of a rectangular region to remove ghosting.
@@ -298,28 +286,48 @@ impl Display {
     /// Raises `TypeError` on USB communication errors or if the firmware
     /// rejects the command.
     pub fn redraw(&self, area: &Rect) -> PyResult<()> {
-        let mut buf = BytesMut::with_capacity(16);
-
-        buf.put_i16(USBCMD_REDRAW);
-        buf.put_i16(0x0000); // Dummy param value
-        buf.put_u8(0x00); // WORKAROUND: Alignment is decoded incorrectly in fw.
-        buf.put_i16_le(area.x0);
-        buf.put_i16_le(area.y0);
-        buf.put_i16_le(area.x1);
-        buf.put_i16_le(area.y1);
-
-        let chksum = crc16::State::<crc16::XMODEM>::calculate(&buf);
-        buf.put_u16(chksum);
+        let buf = build_redraw_packet(area);
         let device = self.device.lock().unwrap();
         device.0.write(&buf).to_py_err()?;
 
         let mut response: [u8; 16] = [0; 16];
         device.0.read_timeout(&mut response, 200).to_py_err()?;
-        match LittleEndian::read_u16(&response) {
-            0x00 => Err(PyTypeError::new_err("invalid command")),
-            0x01 => Err(PyTypeError::new_err("checksum incorrect")),
-            _ => Ok(()),
-        }
+        parse_response(&response)
+    }
+}
+
+fn build_set_mode_packet(mode: &Mode, area: &Rect) -> BytesMut {
+    let mut buf = BytesMut::with_capacity(16);
+    buf.put_i16(USBCMD_SETMODE);
+    buf.put_i16(*mode as i16);
+    buf.put_u8(0x00); // WORKAROUND: Alignment is decoded incorrectly in fw.
+    buf.put_i16_le(area.x0);
+    buf.put_i16_le(area.y0);
+    buf.put_i16_le(area.x1);
+    buf.put_i16_le(area.y1);
+    buf.put_u16(crc16::State::<crc16::XMODEM>::calculate(&buf));
+    buf
+}
+
+fn build_redraw_packet(area: &Rect) -> BytesMut {
+    let mut buf = BytesMut::with_capacity(16);
+    buf.put_i16(USBCMD_REDRAW);
+    buf.put_i16(0x0000); // Dummy param value
+    buf.put_u8(0x00); // WORKAROUND: Alignment is decoded incorrectly in fw.
+    buf.put_i16_le(area.x0);
+    buf.put_i16_le(area.y0);
+    buf.put_i16_le(area.x1);
+    buf.put_i16_le(area.y1);
+    let chksum = crc16::State::<crc16::XMODEM>::calculate(&buf);
+    buf.put_u16(chksum);
+    buf
+}
+
+fn parse_response(response: &[u8]) -> PyResult<()> {
+    match LittleEndian::read_u16(response) {
+        0x00 => Err(PyTypeError::new_err("invalid command")),
+        0x01 => Err(PyTypeError::new_err("checksum incorrect")),
+        _ => Ok(()),
     }
 }
 
@@ -381,4 +389,138 @@ fn glider_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Mode>()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- Rect ---
+
+    #[test]
+    fn rect_new_stores_coordinates() {
+        let r = Rect::new(10, 20, 30, 40);
+        assert_eq!(r.x0, 10);
+        assert_eq!(r.y0, 20);
+        assert_eq!(r.x1, 30);
+        assert_eq!(r.y1, 40);
+    }
+
+    #[test]
+    fn rect_width_and_height() {
+        let r = Rect::new(100, 200, 400, 700);
+        assert_eq!(r.width(), 300);
+        assert_eq!(r.height(), 500);
+    }
+
+    // --- DisplayConfig ---
+
+    #[test]
+    fn display_config_new_stores_all_fields() {
+        let c = DisplayConfig::new(800, 600, 0x1234, 0x5678);
+        assert_eq!(c.width, 800);
+        assert_eq!(c.height, 600);
+        assert_eq!(c.vendor_id, 0x1234);
+        assert_eq!(c.product_id, 0x5678);
+    }
+
+    #[test]
+    fn display_config_glider_standard_is_1600x1200_with_known_vid_pid() {
+        let c = DisplayConfig::glider_standard();
+        assert_eq!(c.width, 1600);
+        assert_eq!(c.height, 1200);
+        assert_eq!(c.vendor_id, 0x1209);
+        assert_eq!(c.product_id, 0xae86);
+    }
+
+    #[test]
+    fn display_config_full_screen_covers_whole_display() {
+        let c = DisplayConfig::new(1600, 1200, 0x1209, 0xae86);
+        let r = c.full_screen();
+        assert_eq!(r.x0, 0);
+        assert_eq!(r.y0, 0);
+        assert_eq!(r.x1, 1600);
+        assert_eq!(r.y1, 1200);
+        assert_eq!(r.width(), 1600);
+        assert_eq!(r.height(), 1200);
+    }
+
+    // --- Mode repr values (regression guard) ---
+
+    #[test]
+    fn mode_repr_values() {
+        assert_eq!(Mode::ManualLUTNoDither as i16, 0);
+        assert_eq!(Mode::ManualLUTErrorDiffusion as i16, 1);
+        assert_eq!(Mode::FastMonoNoDither as i16, 2);
+        assert_eq!(Mode::FastMonoBayer as i16, 3);
+        assert_eq!(Mode::FastMonoBlueNoise as i16, 4);
+        assert_eq!(Mode::FastGrey as i16, 5);
+        assert_eq!(Mode::AutoNoDither as i16, 6);
+        assert_eq!(Mode::AutoErrorDiffusion as i16, 7);
+    }
+
+    // --- Packet layout ---
+
+    #[test]
+    fn set_mode_packet_layout() {
+        let area = Rect::new(0x0010, 0x0020, 0x0030, 0x0040);
+        let buf = build_set_mode_packet(&Mode::FastMonoNoDither, &area);
+
+        // Bytes 0-1: USBCMD_SETMODE (0x0005) big-endian
+        assert_eq!(buf[0], 0x00);
+        assert_eq!(buf[1], 0x05);
+        // Bytes 2-3: Mode::FastMonoNoDither = 2, big-endian
+        assert_eq!(buf[2], 0x00);
+        assert_eq!(buf[3], 0x02);
+        // Byte 4: alignment workaround pad
+        assert_eq!(buf[4], 0x00);
+        // Bytes 5-6: x0 = 0x0010 little-endian
+        assert_eq!(buf[5], 0x10);
+        assert_eq!(buf[6], 0x00);
+        // Bytes 7-8: y0 = 0x0020 little-endian
+        assert_eq!(buf[7], 0x20);
+        assert_eq!(buf[8], 0x00);
+        // Bytes 9-10: x1 = 0x0030 little-endian
+        assert_eq!(buf[9], 0x30);
+        assert_eq!(buf[10], 0x00);
+        // Bytes 11-12: y1 = 0x0040 little-endian
+        assert_eq!(buf[11], 0x40);
+        assert_eq!(buf[12], 0x00);
+        // Bytes 13-14: CRC (non-zero for a non-empty payload)
+        let crc = u16::from_be_bytes([buf[13], buf[14]]);
+        assert_ne!(crc, 0);
+    }
+
+    #[test]
+    fn redraw_packet_layout() {
+        let area = Rect::new(0x0010, 0x0020, 0x0030, 0x0040);
+        let buf = build_redraw_packet(&area);
+
+        // Bytes 0-1: USBCMD_REDRAW (0x0004) big-endian
+        assert_eq!(buf[0], 0x00);
+        assert_eq!(buf[1], 0x04);
+        // Bytes 2-3: dummy param = 0x0000
+        assert_eq!(buf[2], 0x00);
+        assert_eq!(buf[3], 0x00);
+        // Byte 4: alignment workaround pad
+        assert_eq!(buf[4], 0x00);
+        // Coordinate bytes match set_mode layout
+        assert_eq!(buf[5], 0x10);
+        assert_eq!(buf[6], 0x00);
+        assert_eq!(buf[7], 0x20);
+        assert_eq!(buf[8], 0x00);
+        assert_eq!(buf[9], 0x30);
+        assert_eq!(buf[10], 0x00);
+        assert_eq!(buf[11], 0x40);
+        assert_eq!(buf[12], 0x00);
+        let crc = u16::from_be_bytes([buf[13], buf[14]]);
+        assert_ne!(crc, 0);
+    }
+
+    #[test]
+    fn crc_is_nonzero_for_nonempty_input() {
+        let data = [0x00u8, 0x05, 0x00, 0x02, 0x00];
+        let crc = crc16::State::<crc16::XMODEM>::calculate(&data);
+        assert_ne!(crc, 0);
+    }
 }
