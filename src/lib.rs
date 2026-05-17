@@ -15,6 +15,7 @@ use byteorder::{ByteOrder, LittleEndian};
 use bytes::{BufMut, BytesMut};
 use hidapi::{HidApi, HidDevice, HidError, HidResult};
 use pyo3::{exceptions::PyTypeError, prelude::*};
+
 use std::sync::Mutex;
 
 trait ResultExt<T> {
@@ -33,14 +34,6 @@ impl<T> ResultExt<T> for HidResult<T> {
     }
 }
 
-impl<T> ResultExt<T> for serialport::Result<T> {
-    fn to_py_err(self) -> PyResult<T> {
-        match self {
-            Ok(x) => Ok(x),
-            Err(_e) => Err(PyTypeError::new_err("something went wrong")),
-        }
-    }
-}
 
 const VENDOR_ID: u16 = 0x1209;
 const PRODUCT_ID: u16 = 0xae86;
