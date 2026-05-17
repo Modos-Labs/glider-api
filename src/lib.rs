@@ -150,6 +150,57 @@ impl Rect {
     }
 }
 
+/// Configuration describing a specific display panel and its USB device identity.
+///
+/// `DisplayConfig` separates display geometry and USB identity from the live
+/// connection ([`Display`]). Create one once and pass it to
+/// [`Display::new_with_config`] to open the connection, then reuse it to build
+/// [`Rect`] values (e.g. [`DisplayConfig::full_screen`]).
+///
+/// # Adding new display types
+///
+/// Call [`DisplayConfig::new`] with the correct dimensions and the USB
+/// VID/PID for the target board. Pre-built presets (like
+/// [`DisplayConfig::glider_standard`]) are provided for known hardware.
+#[repr(C)]
+#[pyclass(get_all)]
+pub struct DisplayConfig {
+    /// Display width in pixels.
+    pub width: i16,
+    /// Display height in pixels.
+    pub height: i16,
+    /// USB vendor ID of the display controller.
+    pub vendor_id: u16,
+    /// USB product ID of the display controller.
+    pub product_id: u16,
+}
+
+#[pymethods]
+impl DisplayConfig {
+    /// Create a `DisplayConfig` for any display panel.
+    ///
+    /// `width` and `height` are in pixels. `vendor_id` and `product_id` are
+    /// the USB identifiers for the display controller board.
+    #[new]
+    pub fn new(width: i16, height: i16, vendor_id: u16, product_id: u16) -> Self {
+        Self { width, height, vendor_id, product_id }
+    }
+
+    /// Configuration for the standard Glider display (1600 × 1200 pixels).
+    ///
+    /// Uses VID `0x1209` and PID `0xae86`, which match the current Glider
+    /// board. Use this as the starting point for most projects.
+    #[staticmethod]
+    pub fn glider_standard() -> Self {
+        Self::new(1600, 1200, VENDOR_ID, PRODUCT_ID)
+    }
+
+    /// Return a [`Rect`] covering the entire display surface.
+    pub fn full_screen(&self) -> Rect {
+        Rect::new(0, 0, self.width, self.height)
+    }
+}
+
 /// Wrapper that marks HidDevice as Send.
 ///
 /// Safety: The C hidapi library serializes concurrent access to a device handle
@@ -185,6 +236,21 @@ impl Display {
     pub fn new() -> PyResult<Self> {
         let api = HidApi::new_without_enumerate().to_py_err()?;
         let device = api.open(VENDOR_ID, PRODUCT_ID).to_py_err()?;
+
+        Ok(Self { device: Mutex::new(SendableDevice(device)) })
+    }
+
+    /// Connect to the display identified by a [`DisplayConfig`].
+    ///
+    /// Uses `config.vendor_id` and `config.product_id` to locate the device,
+    /// allowing non-standard or future Glider boards to be addressed without
+    /// changing calling code. Prefer this over `Display()` for new projects.
+    ///
+    /// Has the same error and HidApi-enumeration caveats as [`Display::new`].
+    #[staticmethod]
+    pub fn new_with_config(config: &DisplayConfig) -> PyResult<Self> {
+        let api = HidApi::new_without_enumerate().to_py_err()?;
+        let device = api.open(config.vendor_id, config.product_id).to_py_err()?;
 
         Ok(Self { device: Mutex::new(SendableDevice(device)) })
     }
@@ -310,6 +376,7 @@ pub extern "C" fn redraw(d: Display, area: Rect) -> Response {
 #[pymodule]
 fn glider_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Display>()?;
+    m.add_class::<DisplayConfig>()?;
     m.add_class::<Rect>()?;
     m.add_class::<Mode>()?;
 
