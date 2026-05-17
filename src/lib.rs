@@ -4,11 +4,22 @@
 //! methods return Pyo3's `PyResult`; in the future we plan to add a simplified
 //! return type for Rust-exclusive use.
 //!
-//! Example
-//! ```rust
-//! use glider_api::{Mode, Rect, Display}
-//! let display = Display::new()?;
-//! display.set_mode(Mode::FastMonoBlueNoise, Rect{x0: 0, y0: 0, x1: 1000, y1: 1000})?;
+//! # Quick Start (Python)
+//! ```python
+//! from glider_api import Display, DisplayConfig, Mode
+//!
+//! config = DisplayConfig.glider_standard()
+//! display = Display(config)
+//! display.set_mode(Mode.FastMonoNoDither, config.full_screen())
+//! ```
+//!
+//! # Quick Start (Rust)
+//! ```rust,no_run
+//! use glider_api::{Display, DisplayConfig, Mode};
+//! let config = DisplayConfig::glider_standard();
+//! let display = Display::new_with_config(&config)?;
+//! display.set_mode(&Mode::FastMonoNoDither, &config.full_screen())?;
+//! # Ok::<(), pyo3::PyErr>(())
 //! ```
 
 use byteorder::{ByteOrder, LittleEndian};
@@ -38,90 +49,104 @@ impl<T> ResultExt<T> for HidResult<T> {
 const VENDOR_ID: u16 = 0x1209;
 const PRODUCT_ID: u16 = 0xae86;
 
-/// Modes supported by the display controller.
+/// Display refresh modes supported by the Modos controller.
 ///
-/// *ManualLUTNoDither*: 1-bit mode with a custom look-up-table (LUT). Note that
-/// this API does not support uploading manual LUTs at this time.
+/// Each mode trades off refresh speed, image quality, and ghosting behaviour
+/// differently. Choose based on the type of content displayed in each region.
 ///
-/// *ManualLUTErrorDiffusion*: 1-bit mode with a custom look-up-table (LUT),
-/// using error diffusion dithering to approximate grey values. Note that this
-/// API does not support uploading manual LUTs at this time.
+/// Modes that mention "dithering" approximate grey values by alternating black
+/// and white pixels; this looks better on e-ink than a hard threshold but adds
+/// a slight texture.
 ///
-/// *FastMonoNoDither*: 1-bit mode. All gray values are converted to either
-/// black or white.
-///
-/// *FastMonoBayer*: 1-bit mode with Bayer dithering.
-///
-/// *FastMonoBlueNoise*: 1-bit mode with dithering based on a blue noise
-/// pattern.
-///
-/// *FastGrey*: Optimized 4-level grey mode. Note this mode has a much slower
-/// refresh rate compared to all other modes.
-///
-/// *AutoNoDither*: Optimized display mode that switches between 1-bit and gray
-/// values depending on the speed of update. When the input image is changed, it
-/// switches to 1-bit mode with no dithering and does the update. When the image
-/// hasn’t changed for a while, it re-renders the image in greyscale.
-///
-/// *AutoErrorDiffusion*: Like `AutoNoDither`, but uses error diffusion to
-/// approximate grey values during for image updates.
+/// The two `ManualLUT` modes require a custom look-up-table to be uploaded to
+/// the firmware first. That upload is not yet supported by this API; avoid
+/// these modes until support is added.
 #[repr(i16)]
 #[pyclass(eq, eq_int)]
 #[derive(Clone, Copy, PartialEq)]
 pub enum Mode {
-    /// 1-bit mode with a custom look-up-table (LUT). Note that this API does
-    /// not support uploading manual LUTs at this time.
+    /// 1-bit mode driven by a custom firmware look-up-table (LUT).
+    /// LUT upload is not yet supported by this API — do not use.
     ManualLUTNoDither = 0,
 
-    /// 1-bit mode with a custom look-up-table (LUT), using error diffusion
-    /// dithering to approximate grey values. Note that this API does not
-    /// support uploading manual LUTs at this time.
+    /// 1-bit mode with error-diffusion dithering, driven by a custom LUT.
+    /// LUT upload is not yet supported by this API — do not use.
     ManualLUTErrorDiffusion = 1,
 
-    /// 1-bit mode. All gray values are converted to either black or white.
+    /// Fastest 1-bit mode. All grey values snap to black or white with no
+    /// dithering. Best for: terminals, code editors, and UI chrome where
+    /// hard edges are preferred over tonal accuracy.
     FastMonoNoDither = 2,
 
-    /// 1-bit mode with Bayer dithering.
+    /// 1-bit mode with Bayer (ordered) dithering to approximate grey values.
+    /// Best for: games and fast-moving content where some texture is acceptable.
     FastMonoBayer = 3,
 
-    /// 1-bit mode with dithering based on a blue noise pattern.
+    /// 1-bit mode with blue-noise dithering for a less structured appearance
+    /// than Bayer. Best for: images with smooth gradients at fast refresh rates.
     FastMonoBlueNoise = 4,
 
-    /// Optimized 4-level grey mode. Note this mode has a much slower refresh
-    /// rate compared to all other modes.
+    /// 4-level greyscale mode. Produces the best image quality but has a
+    /// significantly slower refresh rate than all other modes.
+    /// Best for: static reading content and photographs.
     FastGrey = 5,
 
-    /// Optimized display mode that switches between 1-bit and gray values
-    /// depending on the speed of update. When the input image is changed, it
-    /// switches to 1-bit mode with no dithering and does the update. When the
-    /// image hasn’t changed for a while, it re-renders the image in greyscale.
+    /// Hybrid mode that switches between 1-bit (fast, while content is
+    /// changing) and greyscale (once content settles). No dithering.
+    /// Best for: mixed-use regions such as maps and reading apps.
     AutoNoDither = 6,
 
-    /// Like `AutoNoDither`, but uses error diffusion to approximate grey values
-    /// during for image updates.
+    /// Like `AutoNoDither` but applies error-diffusion dithering during the
+    /// fast 1-bit phase, producing smoother transitions.
+    /// Best for: mixed-use regions where image quality matters more than speed.
     AutoErrorDiffusion = 7,
 }
 
 const USBCMD_REDRAW: i16 = 0x04;
 const USBCMD_SETMODE: i16 = 0x05;
 
+/// A rectangular region of the screen, in pixels.
+///
+/// The coordinate system has its origin at the top-left corner of the display.
+/// `x` increases to the right; `y` increases downward. `(x0, y0)` is the
+/// top-left corner of the region and `(x1, y1)` is the bottom-right corner
+/// (exclusive).
+///
+/// Use [`DisplayConfig::full_screen`] to get a `Rect` that covers the entire
+/// display without hardcoding dimensions.
 #[repr(C)]
-#[pyclass]
-/// A rectangular area of the screen, used for redrawing as well as setting
-/// modes.
+#[pyclass(get_all)]
 pub struct Rect {
-    x0: i16,
-    y0: i16,
-    x1: i16,
-    y1: i16,
+    /// Left edge (pixels from the left of the display).
+    pub x0: i16,
+    /// Top edge (pixels from the top of the display).
+    pub y0: i16,
+    /// Right edge (exclusive).
+    pub x1: i16,
+    /// Bottom edge (exclusive).
+    pub y1: i16,
 }
 
 #[pymethods]
 impl Rect {
-    /// Define a rectangular area from the four provided coordinates.
+    /// Create a rectangle from its four corner coordinates (pixels).
+    ///
+    /// `(x0, y0)` is the top-left corner; `(x1, y1)` is the bottom-right
+    /// corner (exclusive). All values are in pixels from the top-left of
+    /// the display.
     #[new]
     pub fn new(x0: i16, y0: i16, x1: i16, y1: i16) -> Self {
         Self { x0, y0, x1, y1 }
+    }
+
+    /// Width of the rectangle in pixels.
+    pub fn width(&self) -> i16 {
+        self.x1 - self.x0
+    }
+
+    /// Height of the rectangle in pixels.
+    pub fn height(&self) -> i16 {
+        self.y1 - self.y0
     }
 }
 
@@ -132,7 +157,13 @@ impl Rect {
 struct SendableDevice(HidDevice);
 unsafe impl Send for SendableDevice {}
 
-/// Core structure defining the display and possible interactions.
+/// An open connection to a Modos e-ink display controller.
+///
+/// Obtain an instance via [`Display::new`] (uses the standard Glider VID/PID)
+/// or [`Display::new_with_config`] (uses the VID/PID from a [`DisplayConfig`]).
+///
+/// `Display` is safe to share across threads — all USB commands are serialised
+/// internally through a mutex.
 #[pyclass(frozen)]
 pub struct Display {
     device: Mutex<SendableDevice>,
@@ -140,10 +171,16 @@ pub struct Display {
 
 #[pymethods]
 impl Display {
-    /// Connects to the display and returns a `Display` struct for control.
+    /// Connect to the first Modos display found on USB using the standard
+    /// Glider VID/PID (`0x1209` / `0xae86`).
     ///
-    /// NOTE: This disables device discovery in the HidApi crate. If you are using another
-    /// that also uses HidApi, this may lead to conflicts.
+    /// Raises `TypeError` if no matching device is found or the OS denies
+    /// access. On Linux you may need to configure udev permissions — see the
+    /// README for details.
+    ///
+    /// **Note:** Uses `HidApi::new_without_enumerate`, which disables HID
+    /// device discovery. If another library in the same process also uses
+    /// HidApi with enumeration, the two may conflict.
     #[new]
     pub fn new() -> PyResult<Self> {
         let api = HidApi::new_without_enumerate().to_py_err()?;
@@ -152,8 +189,17 @@ impl Display {
         Ok(Self { device: Mutex::new(SendableDevice(device)) })
     }
 
-    /// Sets the mode for a region of the display. Note that this will always
-    /// force a redraw of the region.
+    /// Set the refresh mode for a rectangular region of the display.
+    ///
+    /// This always triggers an immediate redraw of the region in the new mode.
+    /// Pass a [`Rect`] describing the area to update; use
+    /// [`DisplayConfig::full_screen`] for a whole-display update.
+    ///
+    /// Choose a [`Mode`] based on the content type — see the `Mode` docs for
+    /// per-variant guidance.
+    ///
+    /// Raises `TypeError` on USB communication errors or if the firmware
+    /// rejects the command.
     pub fn set_mode(&self, mode: &Mode, area: &Rect) -> PyResult<()> {
         let mut buf = BytesMut::with_capacity(16);
         buf.put_i16(USBCMD_SETMODE);
@@ -176,9 +222,15 @@ impl Display {
         }
     }
 
-    /// Force a redraw of the region. This will trigger a "flash" of the area
-    /// from black to white before setting the image, in order to clear any
-    /// ghosting.
+    /// Force a hard refresh of a rectangular region to remove ghosting.
+    ///
+    /// E-ink displays can retain faint images of previous content ("ghosting").
+    /// `clear_and_redraw` fixes this by flashing the region from full-black to
+    /// full-white before rendering the current image, at the cost of a visible
+    /// flash. Use it when ghosting becomes distracting, not after every update.
+    ///
+    /// Raises `TypeError` on USB communication errors or if the firmware
+    /// rejects the command.
     pub fn redraw(&self, area: &Rect) -> PyResult<()> {
         let mut buf = BytesMut::with_capacity(16);
 
