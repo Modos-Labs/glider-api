@@ -9,15 +9,35 @@ generation using [Sphinx](https://www.sphinx-doc.org/) for Python and rustdoc fo
 
 [![Video of SDK in action](images/glider-api-overlay-example-1.jpg)](https://www.youtube.com/watch?v=AoDYEZE7gDA)
 
-[Here's a short video](https://www.youtube.com/watch?v=AoDYEZE7gDA)  showing the SDK in action, setting different refresh modes for different sections of the screen:
+[Here's a short video](https://www.youtube.com/watch?v=AoDYEZE7gDA) showing the SDK in action, setting different refresh modes for different sections of the screen.
 
-Note: this package isn't yet installable as a wheel for python (e.g. via `pip`)
+Note: this package isn't yet installable as a wheel for Python (e.g. via `pip`)
 or as a crate for Rust (e.g. via `cargo`) so you'll need to build it yourself.
+
+## Quickstart
+
+```sh
+git clone <repo-url> && cd glider-api
+pip install .
+```
+
+```python
+from glider_api import Display, DisplayConfig, Mode
+
+config  = DisplayConfig.glider_standard()   # 1600×1200, standard Glider VID/PID
+display = Display.new_with_config(config)
+display.set_mode(Mode.FastMonoNoDither, config.full_screen())
+```
+
+For first-time setup — prerequisites, Linux USB permissions, and
+troubleshooting — see **[GETTING_STARTED.md](GETTING_STARTED.md)**.
+For deeper reference — mode selection, multi-zone layouts, ghosting, thread
+safety — see **[INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md)**.
 
 ## Python 
 
 ### Prerequisites:
-- Python (min version 3.12)
+- Python 3.12+
 - Rust (tested with 1.89.0)
 - Sphinx (for doc generation)
 - Linux only: pkgconfig and libudev-dev
