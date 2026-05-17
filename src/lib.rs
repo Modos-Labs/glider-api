@@ -11,7 +11,6 @@
 //! display.set_mode(Mode::FastMonoBlueNoise, Rect{x0: 0, y0: 0, x1: 1000, y1: 1000})?;
 //! ```
 
-use byteorder::{ByteOrder, LittleEndian};
 use bytes::{BufMut, BytesMut};
 use hidapi::{HidApi, HidDevice, HidError, HidResult};
 use pyo3::{exceptions::PyTypeError, prelude::*};
@@ -170,11 +169,7 @@ impl Display {
 
         let mut response: [u8; 32] = [0; 32];
         self.device.read_timeout(&mut response, 200).to_py_err()?;
-        match LittleEndian::read_u16(&response) {
-            0x00 => Err(PyTypeError::new_err("invalid command")),
-            0x01 => Err(PyTypeError::new_err("checksum incorrect")),
-            _ => Ok(()),
-        }
+        parse_response(&response)
     }
 
     /// Force a redraw of the region. This will trigger a "flash" of the area
@@ -197,11 +192,17 @@ impl Display {
 
         let mut response: [u8; 16] = [0; 16];
         self.device.read_timeout(&mut response, 200).to_py_err()?;
-        match LittleEndian::read_u16(&response) {
-            0x00 => Err(PyTypeError::new_err("invalid command")),
-            0x01 => Err(PyTypeError::new_err("checksum incorrect")),
-            _ => Ok(()),
-        }
+        parse_response(&response)
+    }
+}
+
+// Firmware (Dec 27 2025, commit e7fa3c01) prepends REPORT_ID_CONTROL (5) as
+// byte 0 of every response. The return value (USBRET_*) is at byte 1.
+fn parse_response(response: &[u8]) -> PyResult<()> {
+    match response[1] {
+        0x00 => Err(PyTypeError::new_err("command failed")),
+        0x01 => Err(PyTypeError::new_err("checksum incorrect")),
+        _ => Ok(()),
     }
 }
 
