@@ -22,7 +22,6 @@
 //! # Ok::<(), pyo3::PyErr>(())
 //! ```
 
-use byteorder::{ByteOrder, LittleEndian};
 use bytes::{BufMut, BytesMut};
 use hidapi::{HidApi, HidDevice, HidError, HidResult};
 use pyo3::{exceptions::PyTypeError, prelude::*};
@@ -102,8 +101,9 @@ pub enum Mode {
     AutoErrorDiffusion = 7,
 }
 
-const USBCMD_REDRAW: i16 = 0x04;
-const USBCMD_SETMODE: i16 = 0x05;
+const REPORT_ID_CONTROL: u8 = 5;
+const USBCMD_REDRAW: u8 = 0x04;
+const USBCMD_SETMODE: u8 = 0x05;
 
 /// A rectangular region of the screen, in pixels.
 ///
@@ -267,7 +267,7 @@ impl Display {
     /// Raises `TypeError` on USB communication errors or if the firmware
     /// rejects the command.
     pub fn set_mode(&self, mode: &Mode, area: &Rect) -> PyResult<()> {
-        let buf = build_set_mode_packet(mode, area);
+        let buf = build_display_packet(USBCMD_SETMODE, *mode as u16, area);
         let device = self.device.lock().unwrap();
         device.0.write(&buf).to_py_err()?;
 
@@ -286,7 +286,7 @@ impl Display {
     /// Raises `TypeError` on USB communication errors or if the firmware
     /// rejects the command.
     pub fn redraw(&self, area: &Rect) -> PyResult<()> {
-        let buf = build_redraw_packet(area);
+        let buf = build_display_packet(USBCMD_REDRAW, 0x0000, area);
         let device = self.device.lock().unwrap();
         device.0.write(&buf).to_py_err()?;
 
@@ -296,37 +296,33 @@ impl Display {
     }
 }
 
-fn build_set_mode_packet(mode: &Mode, area: &Rect) -> BytesMut {
+fn build_display_packet(cmd: u8, param: u16, area: &Rect) -> BytesMut {
     let mut buf = BytesMut::with_capacity(16);
-    buf.put_i16(USBCMD_SETMODE);
-    buf.put_i16(*mode as i16);
-    buf.put_u8(0x00); // WORKAROUND: Alignment is decoded incorrectly in fw.
+    buf.put_u8(REPORT_ID_CONTROL);
+    buf.put_u8(cmd);
+    buf.put_u16_le(param);
     buf.put_i16_le(area.x0);
     buf.put_i16_le(area.y0);
     buf.put_i16_le(area.x1);
     buf.put_i16_le(area.y1);
-    buf.put_u16(crc16::State::<crc16::XMODEM>::calculate(&buf));
+    buf.put_u16_le(0x0000); // ID
+    let crc = crc16::State::<crc16::XMODEM>::calculate(&buf[1..]);
+    buf.put_u16_le(crc);
     buf
 }
 
-fn build_redraw_packet(area: &Rect) -> BytesMut {
-    let mut buf = BytesMut::with_capacity(16);
-    buf.put_i16(USBCMD_REDRAW);
-    buf.put_i16(0x0000); // Dummy param value
-    buf.put_u8(0x00); // WORKAROUND: Alignment is decoded incorrectly in fw.
-    buf.put_i16_le(area.x0);
-    buf.put_i16_le(area.y0);
-    buf.put_i16_le(area.x1);
-    buf.put_i16_le(area.y1);
-    let chksum = crc16::State::<crc16::XMODEM>::calculate(&buf);
-    buf.put_u16(chksum);
-    buf
-}
-
+// Firmware prepends REPORT_ID_CONTROL (5) as byte 0 of every response.
+// The return value (USBRET_*) is at byte 1.
 fn parse_response(response: &[u8]) -> PyResult<()> {
-    match LittleEndian::read_u16(response) {
-        0x00 => Err(PyTypeError::new_err("invalid command")),
-        0x01 => Err(PyTypeError::new_err("checksum incorrect")),
+    match response[1] {
+        0x00 => Err(PyTypeError::new_err(format!(
+            "firmware rejected command (code 0x00): raw response {:02x?}",
+            response
+        ))),
+        0x01 => Err(PyTypeError::new_err(format!(
+            "firmware reported checksum mismatch (code 0x01): raw response {:02x?}",
+            response
+        ))),
         _ => Ok(()),
     }
 }
@@ -349,36 +345,48 @@ impl<T, E> From<Result<T, E>> for Response {
     }
 }
 
-/// Connects to the display and returns a `Display` struct for control.
-#[doc(hidden)]
+/// Connect to the first Modos display found on USB.
+///
+/// Returns a heap-allocated `Display` pointer on success, or NULL on failure.
+/// The caller is responsible for calling [`glider_close`] when done.
 #[no_mangle]
-pub extern "C" fn create_display(d: &mut Display) -> Response {
+pub extern "C" fn glider_open() -> *mut Display {
     match Display::new() {
-        Ok(display) => {
-            *d = display;
-            return Response::Success;
-        }
-        Err(_) => return Response::Failure,
+        Ok(d) => Box::into_raw(Box::new(d)),
+        Err(_) => std::ptr::null_mut(),
     }
 }
 
-/// Sets the mode for a region of the display. Note that this will always
-/// force a redraw of the region.
-#[doc(hidden)]
+/// Close a display connection and free its memory.
+///
+/// Safe to call with NULL. After this call the pointer is invalid.
 #[no_mangle]
-#[allow(warnings)]
-pub extern "C" fn set_mode(d: Display, mode: Mode, area: Rect) -> Response {
-    d.set_mode(&mode, &area).into()
+pub extern "C" fn glider_close(d: *mut Display) {
+    if !d.is_null() {
+        unsafe { drop(Box::from_raw(d)) };
+    }
 }
 
-/// Force a redraw of the region. This will trigger a "flash" of the area
-/// from black to white before setting the image, in order to clear any
-/// ghosting.
-#[doc(hidden)]
+/// Set the refresh mode for a rectangular region of the display.
+///
+/// Returns `SUCCESS` (85) on success or `FAILURE` (0) on error.
 #[no_mangle]
-#[allow(warnings)]
-pub extern "C" fn redraw(d: Display, area: Rect) -> Response {
-    d.redraw(&area).into()
+pub extern "C" fn glider_set_mode(d: *mut Display, mode: Mode, area: Rect) -> Response {
+    if d.is_null() {
+        return Response::Failure;
+    }
+    unsafe { &*d }.set_mode(&mode, &area).into()
+}
+
+/// Force a hard refresh of a rectangular region to remove ghosting.
+///
+/// Returns `SUCCESS` (85) on success or `FAILURE` (0) on error.
+#[no_mangle]
+pub extern "C" fn glider_redraw(d: *mut Display, area: Rect) -> Response {
+    if d.is_null() {
+        return Response::Failure;
+    }
+    unsafe { &*d }.redraw(&area).into()
 }
 
 #[pymodule]
@@ -464,62 +472,67 @@ mod tests {
     #[test]
     fn set_mode_packet_layout() {
         let area = Rect::new(0x0010, 0x0020, 0x0030, 0x0040);
-        let buf = build_set_mode_packet(&Mode::FastMonoNoDither, &area);
+        let buf = build_display_packet(USBCMD_SETMODE, Mode::FastMonoNoDither as u16, &area);
 
-        // Bytes 0-1: USBCMD_SETMODE (0x0005) big-endian
-        assert_eq!(buf[0], 0x00);
+        // Byte 0: REPORT_ID_CONTROL = 5
+        assert_eq!(buf[0], 0x05);
+        // Byte 1: USBCMD_SETMODE = 0x05
         assert_eq!(buf[1], 0x05);
-        // Bytes 2-3: Mode::FastMonoNoDither = 2, big-endian
-        assert_eq!(buf[2], 0x00);
-        assert_eq!(buf[3], 0x02);
-        // Byte 4: alignment workaround pad
-        assert_eq!(buf[4], 0x00);
-        // Bytes 5-6: x0 = 0x0010 little-endian
-        assert_eq!(buf[5], 0x10);
-        assert_eq!(buf[6], 0x00);
-        // Bytes 7-8: y0 = 0x0020 little-endian
-        assert_eq!(buf[7], 0x20);
-        assert_eq!(buf[8], 0x00);
-        // Bytes 9-10: x1 = 0x0030 little-endian
-        assert_eq!(buf[9], 0x30);
-        assert_eq!(buf[10], 0x00);
-        // Bytes 11-12: y1 = 0x0040 little-endian
-        assert_eq!(buf[11], 0x40);
+        // Bytes 2-3: Mode::FastMonoNoDither = 2, little-endian
+        assert_eq!(buf[2], 0x02);
+        assert_eq!(buf[3], 0x00);
+        // Bytes 4-5: x0 = 0x0010 little-endian
+        assert_eq!(buf[4], 0x10);
+        assert_eq!(buf[5], 0x00);
+        // Bytes 6-7: y0 = 0x0020 little-endian
+        assert_eq!(buf[6], 0x20);
+        assert_eq!(buf[7], 0x00);
+        // Bytes 8-9: x1 = 0x0030 little-endian
+        assert_eq!(buf[8], 0x30);
+        assert_eq!(buf[9], 0x00);
+        // Bytes 10-11: y1 = 0x0040 little-endian
+        assert_eq!(buf[10], 0x40);
+        assert_eq!(buf[11], 0x00);
+        // Bytes 12-13: ID = 0x0000
         assert_eq!(buf[12], 0x00);
-        // Bytes 13-14: CRC (non-zero for a non-empty payload)
-        let crc = u16::from_be_bytes([buf[13], buf[14]]);
+        assert_eq!(buf[13], 0x00);
+        // Bytes 14-15: CRC little-endian (non-zero for a non-empty payload)
+        let crc = u16::from_le_bytes([buf[14], buf[15]]);
         assert_ne!(crc, 0);
     }
 
     #[test]
     fn redraw_packet_layout() {
         let area = Rect::new(0x0010, 0x0020, 0x0030, 0x0040);
-        let buf = build_redraw_packet(&area);
+        let buf = build_display_packet(USBCMD_REDRAW, 0x0000, &area);
 
-        // Bytes 0-1: USBCMD_REDRAW (0x0004) big-endian
-        assert_eq!(buf[0], 0x00);
+        // Byte 0: REPORT_ID_CONTROL = 5
+        assert_eq!(buf[0], 0x05);
+        // Byte 1: USBCMD_REDRAW = 0x04
         assert_eq!(buf[1], 0x04);
-        // Bytes 2-3: dummy param = 0x0000
+        // Bytes 2-3: param = 0x0000
         assert_eq!(buf[2], 0x00);
         assert_eq!(buf[3], 0x00);
-        // Byte 4: alignment workaround pad
-        assert_eq!(buf[4], 0x00);
-        // Coordinate bytes match set_mode layout
-        assert_eq!(buf[5], 0x10);
-        assert_eq!(buf[6], 0x00);
-        assert_eq!(buf[7], 0x20);
-        assert_eq!(buf[8], 0x00);
-        assert_eq!(buf[9], 0x30);
-        assert_eq!(buf[10], 0x00);
-        assert_eq!(buf[11], 0x40);
+        // Coordinate bytes
+        assert_eq!(buf[4], 0x10);
+        assert_eq!(buf[5], 0x00);
+        assert_eq!(buf[6], 0x20);
+        assert_eq!(buf[7], 0x00);
+        assert_eq!(buf[8], 0x30);
+        assert_eq!(buf[9], 0x00);
+        assert_eq!(buf[10], 0x40);
+        assert_eq!(buf[11], 0x00);
+        // Bytes 12-13: ID = 0x0000
         assert_eq!(buf[12], 0x00);
-        let crc = u16::from_be_bytes([buf[13], buf[14]]);
+        assert_eq!(buf[13], 0x00);
+        // Bytes 14-15: CRC little-endian (non-zero for a non-empty payload)
+        let crc = u16::from_le_bytes([buf[14], buf[15]]);
         assert_ne!(crc, 0);
     }
 
     #[test]
     fn crc_is_nonzero_for_nonempty_input() {
-        let data = [0x00u8, 0x05, 0x00, 0x02, 0x00];
+        let data = [0x05u8, 0x04, 0x00, 0x00];
         let crc = crc16::State::<crc16::XMODEM>::calculate(&data);
         assert_ne!(crc, 0);
     }
