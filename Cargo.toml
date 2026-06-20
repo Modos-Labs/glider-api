@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
 name = "glider_api"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 byteorder = "1.5.0"
@@ -14,7 +14,26 @@ bytes = "1.10.1"
 crc16 = "0.4.0"
 hidapi = "2.6.3"
 pyo3 = "0.24.0"
-serialport = "4.7.2"
 
 [build-dependencies]
 cbindgen = "0.24.3"
+
+[[example]]
+name = "getting_started"
+path = "examples/rust/getting_started.rs"
+
+[[example]]
+name = "redraw"
+path = "examples/rust/redraw.rs"
+
+[[example]]
+name = "mode_guide"
+path = "examples/rust/mode_guide.rs"
+
+[[example]]
+name = "multi_zone"
+path = "examples/rust/multi_zone.rs"
+
+[[example]]
+name = "error_handling"
+path = "examples/rust/error_handling.rs"
