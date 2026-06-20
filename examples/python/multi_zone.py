@@ -8,17 +8,18 @@ greyscale for a document, low-latency binary for a game.
 
 This example divides the 1600×1200 Glider display into three zones:
 
-  ┌────────────────┬────────────────┐
-  │                │                │
-  │  Left half     │  Top-right     │
-  │  FastMonoNoDither  AutoNoDither │
-  │  (terminal /   │  (reading /    │
-  │   drawing)     │   maps)        │
-  │                ├────────────────┤
-  │                │  Bottom-right  │
-  │                │  FastMonoBayer │
-  │                │  (gaming)      │
-  └────────────────┴────────────────┘
+  ┌───────────────────┬────────────────┐
+  │                   │                │
+  │  Left half        │  Top-right     │
+  │  FastMonoNoDither |  AutoNoDither  │
+  │  (terminal /      │  (reading /    │
+  │   drawing)        │   maps)        │
+  │                   ├────────────────┤
+  │                   │  Bottom-right  │
+  │                   │  FastMonoBayer │
+  │                   │  (video /      |
+  |                   |   gaming)      │
+  └───────────────────┴────────────────┘
 
 Adjust the Rect coordinates to match your actual layout.
 """
