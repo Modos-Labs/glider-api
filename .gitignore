@@ -7,3 +7,8 @@ venv
 include
 target
 Cargo.lock
+examples/c/getting_started
+examples/c/redraw
+examples/c/mode_guide
+examples/c/multi_zone
+examples/c/error_handling
