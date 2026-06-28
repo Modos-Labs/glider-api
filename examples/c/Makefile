@@ -4,7 +4,7 @@ LIB_DIR = ../../target/debug
 LIB     = $(LIB_DIR)/libglider_api.so
 LDFLAGS = -Wl,-rpath,$(abspath $(LIB_DIR))
 
-TARGETS = getting_started redraw mode_guide multi_zone error_handling
+TARGETS = getting_started redraw mode_guide multi_zone error_handling standby
 
 all: $(TARGETS)
 
