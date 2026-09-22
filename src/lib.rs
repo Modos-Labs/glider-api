@@ -104,6 +104,11 @@ pub enum Mode {
 const REPORT_ID_CONTROL: u8 = 5;
 const USBCMD_REDRAW: u8 = 0x04;
 const USBCMD_SETMODE: u8 = 0x05;
+const USBCMD_SETLIGHTNESS: u8 = 0x09;
+const USBCMD_SETCONTRAST: u8 = 0x0A;
+const USBCMD_GETTONE: u8 = 0x0B;
+const USBCMD_GETMODE: u8 = 0x0C;
+const USBCMD_GETSIGNAL: u8 = 0x0D;
 
 /// A rectangular region of the screen, in pixels.
 ///
@@ -201,6 +206,33 @@ impl DisplayConfig {
     }
 }
 
+/// Tone mapping applied to greyscale output.
+///
+/// `lightness` shifts midtones brighter (positive) or darker (negative) while
+/// keeping black and white fixed. `contrast` expands or compresses the tonal
+/// range around the midpoint. These are the same values the display's on-screen
+/// menu edits; changing them takes effect immediately without a redraw.
+///
+/// Valid ranges match the firmware's OSD: lightness −3…+3, contrast −1…+6.
+#[repr(C)]
+#[pyclass(get_all)]
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Tone {
+    /// Lightness adjustment (−3…+3).
+    pub lightness: i8,
+    /// Contrast adjustment (−1…+6).
+    pub contrast: i8,
+}
+
+#[pymethods]
+impl Tone {
+    /// Create a `Tone` from its lightness and contrast adjustments.
+    #[new]
+    pub fn new(lightness: i8, contrast: i8) -> Self {
+        Self { lightness, contrast }
+    }
+}
+
 /// Wrapper that marks HidDevice as Send.
 ///
 /// Safety: The C hidapi library serializes concurrent access to a device handle
@@ -276,6 +308,111 @@ impl Display {
         parse_response(&response)
     }
 
+    /// Apply the tone mapping (lightness and contrast) to the display.
+    ///
+    /// Sends one command per value (lightness first, then contrast) so the
+    /// pair is always applied together. The setting takes effect immediately,
+    /// without a redraw, and is persisted by the controller across power
+    /// cycles.
+    ///
+    /// Valid ranges match the display's OSD menu: lightness −3…+3,
+    /// contrast −1…+6. Values outside those ranges raise `TypeError` before
+    /// anything is sent.
+    ///
+    /// Raises `TypeError` on USB communication errors or if the firmware
+    /// rejects the command.
+    pub fn set_tone(&self, tone: &Tone) -> PyResult<()> {
+        if !(-3..=3).contains(&tone.lightness) {
+            return Err(PyTypeError::new_err(format!(
+                "lightness {} out of range -3..3", tone.lightness)));
+        }
+        if !(-1..=6).contains(&tone.contrast) {
+            return Err(PyTypeError::new_err(format!(
+                "contrast {} out of range -1..6", tone.contrast)));
+        }
+        let area = Rect::new(0, 0, 0, 0);
+        let buf = build_display_packet(USBCMD_SETLIGHTNESS, tone.lightness as u16, &area);
+        let lightness_buf = build_display_packet(USBCMD_SETCONTRAST, tone.contrast as u16, &area);
+        let device = self.device.lock().unwrap();
+        device.0.write(&buf).to_py_err()?;
+
+        let mut response: [u8; 32] = [0; 32];
+        device.0.read_timeout(&mut response, 200).to_py_err()?;
+        parse_response(&response)?;
+
+        device.0.write(&lightness_buf).to_py_err()?;
+        device.0.read_timeout(&mut response, 200).to_py_err()?;
+        parse_response(&response)
+    }
+
+    /// Read the tone mapping (lightness and contrast) from the controller.
+    ///
+    /// This is a hardware read-back, unlike mode state on older firmware:
+    /// the returned `Tone` reflects the device's current setting, including
+    /// changes made via the on-screen menu.
+    ///
+    /// Raises `TypeError` on USB communication errors, if the firmware
+    /// rejects the command, or if the connected firmware predates tone
+    /// support (getters would time out with no response).
+    pub fn get_tone(&self) -> PyResult<Tone> {
+        let area = Rect::new(0, 0, 0, 0);
+        let buf = build_display_packet(USBCMD_GETTONE, 0x0000, &area);
+        let device = self.device.lock().unwrap();
+        device.0.write(&buf).to_py_err()?;
+
+        let mut response: [u8; 32] = [0; 32];
+        device.0.read_timeout(&mut response, 200).to_py_err()?;
+        parse_response(&response)?;
+        Ok(Tone::new(response[8] as i8, response[9] as i8))
+    }
+
+    /// Read the active refresh [`Mode`] from the controller.
+    ///
+    /// This is a hardware read-back of the current mode, including modes set
+    /// via the display's physical buttons or on-screen menu.
+    ///
+    /// Raises `TypeError` on USB communication errors, if the firmware
+    /// rejects the command, or if the connected firmware predates getter
+    /// support.
+    pub fn get_mode(&self) -> PyResult<Mode> {
+        let area = Rect::new(0, 0, 0, 0);
+        let buf = build_display_packet(USBCMD_GETMODE, 0x0000, &area);
+        let device = self.device.lock().unwrap();
+        device.0.write(&buf).to_py_err()?;
+
+        let mut response: [u8; 32] = [0; 32];
+        device.0.read_timeout(&mut response, 200).to_py_err()?;
+        parse_response(&response)?;
+        match response[8] {
+            0 => Ok(Mode::ManualLUTNoDither),
+            1 => Ok(Mode::ManualLUTErrorDiffusion),
+            2 => Ok(Mode::FastMonoNoDither),
+            3 => Ok(Mode::FastMonoBayer),
+            4 => Ok(Mode::FastMonoBlueNoise),
+            5 => Ok(Mode::FastGrey),
+            6 => Ok(Mode::AutoNoDither),
+            7 => Ok(Mode::AutoErrorDiffusion),
+            other => Err(PyTypeError::new_err(format!(
+                "firmware reported unknown mode {}", other))),
+        }
+    }
+
+    /// Read the raw video-input status byte from the controller.
+    ///
+    /// Bit layout is firmware-defined; the main use is diagnostics (for
+    /// example detecting signal loss). Most applications can ignore this.
+    pub fn get_signal_status(&self) -> PyResult<u8> {
+        let area = Rect::new(0, 0, 0, 0);
+        let buf = build_display_packet(USBCMD_GETSIGNAL, 0x0000, &area);
+        let device = self.device.lock().unwrap();
+        device.0.write(&buf).to_py_err()?;
+
+        let mut response: [u8; 32] = [0; 32];
+        device.0.read_timeout(&mut response, 200).to_py_err()?;
+        parse_response(&response)?;
+        Ok(response[8])
+    }
+
     /// Force a hard refresh of a rectangular region to remove ghosting.
     ///
     /// E-ink displays can retain faint images of previous content ("ghosting").
@@ -321,6 +458,10 @@ fn parse_response(response: &[u8]) -> PyResult<()> {
         ))),
         0x01 => Err(PyTypeError::new_err(format!(
             "firmware reported checksum mismatch (code 0x01): raw response {:02x?}",
+            response
+        ))),
+        0x02 => Err(PyTypeError::new_err(format!(
+            "firmware rejected value (code 0x02): raw response {:02x?}",
             response
         ))),
         _ => Ok(()),
@@ -389,12 +530,81 @@ pub extern "C" fn glider_redraw(d: *mut Display, area: Rect) -> Response {
     unsafe { &*d }.redraw(&area).into()
 }
 
+/// Apply the tone mapping (lightness and contrast) to the display.
+///
+/// Returns `SUCCESS` (85) on success or `FAILURE` (0) on error.
+#[no_mangle]
+pub extern "C" fn glider_set_tone(d: *mut Display, tone: Tone) -> Response {
+    if d.is_null() {
+        return Response::Failure;
+    }
+    unsafe { &*d }.set_tone(&tone).into()
+}
+
+/// Read the tone mapping from the controller.
+///
+/// On success writes the current lightness to `*lightness` and contrast to
+/// `*contrast` and returns `SUCCESS` (85); otherwise returns `FAILURE` (0).
+#[no_mangle]
+pub extern "C" fn glider_get_tone(d: *mut Display, lightness: *mut i8, contrast: *mut i8) -> Response {
+    if d.is_null() || lightness.is_null() || contrast.is_null() {
+        return Response::Failure;
+    }
+    match unsafe { &*d }.get_tone() {
+        Ok(tone) => {
+            unsafe {
+                *lightness = tone.lightness;
+                *contrast = tone.contrast;
+            }
+            Response::Success
+        }
+        Err(_) => Response::Failure,
+    }
+}
+
+/// Read the active refresh mode from the controller.
+///
+/// On success writes the mode ordinal to `*mode` and returns `SUCCESS` (85);
+/// otherwise returns `FAILURE` (0).
+#[no_mangle]
+pub extern "C" fn glider_get_mode(d: *mut Display, mode: *mut u8) -> Response {
+    if d.is_null() || mode.is_null() {
+        return Response::Failure;
+    }
+    match unsafe { &*d }.get_mode() {
+        Ok(m) => {
+            unsafe { *mode = m as u8 };
+            Response::Success
+        }
+        Err(_) => Response::Failure,
+    }
+}
+
+/// Read the raw video-input status byte from the controller.
+///
+/// On success writes the status byte to `*status` and returns `SUCCESS` (85);
+/// otherwise returns `FAILURE` (0).
+#[no_mangle]
+pub extern "C" fn glider_get_signal_status(d: *mut Display, status: *mut u8) -> Response {
+    if d.is_null() || status.is_null() {
+        return Response::Failure;
+    }
+    match unsafe { &*d }.get_signal_status() {
+        Ok(s) => {
+            unsafe { *status = s };
+            Response::Success
+        }
+        Err(_) => Response::Failure,
+    }
+}
+
 #[pymodule]
 fn glider_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Display>()?;
     m.add_class::<DisplayConfig>()?;
     m.add_class::<Rect>()?;
     m.add_class::<Mode>()?;
+    m.add_class::<Tone>()?;
 
     Ok(())
 }
@@ -535,5 +745,53 @@ mod tests {
         let data = [0x05u8, 0x04, 0x00, 0x00];
         let crc = crc16::State::<crc16::XMODEM>::calculate(&data);
         assert_ne!(crc, 0);
+    }
+
+    // --- Tone packets ---
+
+    #[test]
+    fn set_lightness_packet_layout_encodes_negative_param() {
+        let area = Rect::new(0, 0, 0, 0);
+        let buf = build_display_packet(USBCMD_SETLIGHTNESS, (-1i8) as u16, &area);
+
+        assert_eq!(buf[0], 0x05); // REPORT_ID_CONTROL
+        assert_eq!(buf[1], 0x09); // USBCMD_SETLIGHTNESS
+        // param = -1 as little-endian u16 (two's complement)
+        assert_eq!(buf[2], 0xFF);
+        assert_eq!(buf[3], 0xFF);
+        // Zero rect
+        assert_eq!(&buf[4..12], &[0u8; 8]);
+        let crc = u16::from_le_bytes([buf[14], buf[15]]);
+        assert_ne!(crc, 0);
+    }
+
+    #[test]
+    fn set_contrast_packet_layout() {
+        let area = Rect::new(0, 0, 0, 0);
+        let buf = build_display_packet(USBCMD_SETCONTRAST, 6u16, &area);
+
+        assert_eq!(buf[0], 0x05);
+        assert_eq!(buf[1], 0x0A); // USBCMD_SETCONTRAST
+        assert_eq!(buf[2], 0x06);
+        assert_eq!(buf[3], 0x00);
+    }
+
+    #[test]
+    fn gettone_packet_layout() {
+        let area = Rect::new(0, 0, 0, 0);
+        let buf = build_display_packet(USBCMD_GETTONE, 0x0000, &area);
+
+        assert_eq!(buf[0], 0x05);
+        assert_eq!(buf[1], 0x0B); // USBCMD_GETTONE
+        assert_eq!(buf[2], 0x00);
+        assert_eq!(buf[3], 0x00);
+    }
+
+    #[test]
+    fn tone_new_stores_values() {
+        let t = Tone::new(-2, 5);
+        assert_eq!(t.lightness, -2);
+        assert_eq!(t.contrast, 5);
+        assert_eq!(t, Tone { lightness: -2, contrast: 5 });
     }
 }
