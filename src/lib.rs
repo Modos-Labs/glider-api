@@ -109,6 +109,10 @@ const USBCMD_SETCONTRAST: u8 = 0x0A;
 const USBCMD_GETTONE: u8 = 0x0B;
 const USBCMD_GETMODE: u8 = 0x0C;
 const USBCMD_GETSIGNAL: u8 = 0x0D;
+const USBCMD_SETACMODE: u8 = 0x0E;
+const USBCMD_SETACINTERVAL: u8 = 0x0F;
+const USBCMD_SETACTHRESHOLD: u8 = 0x10;
+const USBCMD_GETAC: u8 = 0x11;
 
 /// A rectangular region of the screen, in pixels.
 ///
@@ -230,6 +234,32 @@ impl Tone {
     #[new]
     pub fn new(lightness: i8, contrast: i8) -> Self {
         Self { lightness, contrast }
+    }
+}
+
+/// Auto-clear (periodic anti-ghosting refresh) settings.
+///
+/// E-ink panels accumulate faint after-images ("ghosting") over time.
+/// The controller can refresh the screen automatically to remove it:
+/// either when enough content has changed (`mode` = Adaptive) or on a
+/// fixed timer (`mode` = Fixed). Mirrors the OSD's Auto Clear submenu.
+#[pyclass(get_all)]
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct AutoClear {
+    /// Clear mode: 0 = Off, 1 = Adaptive, 2 = Fixed.
+    pub mode: u8,
+    /// Timer interval for Fixed mode: 0 = 1 min, 1 = 5 min, 2 = 15 min.
+    pub interval: u8,
+    /// Change threshold for Adaptive mode: 0 = sometimes, 1 = occasionally, 2 = often.
+    pub threshold: u8,
+}
+
+#[pymethods]
+impl AutoClear {
+    /// Create an `AutoClear` from its mode, interval and threshold codes.
+    #[new]
+    pub fn new(mode: u8, interval: u8, threshold: u8) -> Self {
+        Self { mode, interval, threshold }
     }
 }
 
@@ -391,6 +421,57 @@ impl Display {
         let mut response: [u8; 32] = [0; 32];
         transact(&mut device.0, USBCMD_GETSIGNAL, &buf, Some(&mut response))?;
         Ok(response[8])
+    }
+
+    /// Read the auto-clear settings from the controller.
+    ///
+    /// This is a hardware read-back, including changes made via the
+    /// on-screen menu or the physical buttons.
+    ///
+    /// Raises `TypeError` on USB communication errors, if the firmware
+    /// rejects the command, or if the firmware predates auto-clear
+    /// control support (the getter would time out with no response).
+    pub fn get_autoclear(&self) -> PyResult<AutoClear> {
+        let area = Rect::new(0, 0, 0, 0);
+        let buf = build_display_packet(USBCMD_GETAC, 0x0000, &area);
+        let mut device = self.device.lock().unwrap();
+        let mut response: [u8; 32] = [0; 32];
+        transact(&mut device.0, USBCMD_GETAC, &buf, Some(&mut response))?;
+        Ok(AutoClear::new(response[8], response[9], response[10]))
+    }
+
+    /// Set the auto-clear settings on the controller.
+    ///
+    /// `mode`: 0 = Off, 1 = Adaptive, 2 = Fixed. `interval` (Fixed-mode
+    /// timer): 0 = 1 min, 1 = 5 min, 2 = 15 min. `threshold` (Adaptive
+    /// change threshold): 0 = sometimes, 1 = occasionally, 2 = often.
+    ///
+    /// Applies immediately and is persisted; the flash write is deferred
+    /// to the device's UI task, so rapid bursts coalesce into fewer writes.
+    ///
+    /// Raises `TypeError` on out-of-range values or USB communication
+    /// errors.
+    pub fn set_autoclear(&self, ac: &AutoClear) -> PyResult<()> {
+        if ac.mode > 2 {
+            return Err(PyTypeError::new_err(format!(
+                "autoclear mode {} out of range 0..2", ac.mode)));
+        }
+        if ac.interval > 2 {
+            return Err(PyTypeError::new_err(format!(
+                "autoclear interval {} out of range 0..2", ac.interval)));
+        }
+        if ac.threshold > 2 {
+            return Err(PyTypeError::new_err(format!(
+                "autoclear threshold {} out of range 0..2", ac.threshold)));
+        }
+        let area = Rect::new(0, 0, 0, 0);
+        let mode_buf = build_display_packet(USBCMD_SETACMODE, ac.mode as u16, &area);
+        let interval_buf = build_display_packet(USBCMD_SETACINTERVAL, ac.interval as u16, &area);
+        let threshold_buf = build_display_packet(USBCMD_SETACTHRESHOLD, ac.threshold as u16, &area);
+        let mut device = self.device.lock().unwrap();
+        transact(&mut device.0, USBCMD_SETACMODE, &mode_buf, None)?;
+        transact(&mut device.0, USBCMD_SETACINTERVAL, &interval_buf, None)?;
+        transact(&mut device.0, USBCMD_SETACTHRESHOLD, &threshold_buf, None)
     }
 
     /// Force a hard refresh of a rectangular region to remove ghosting.
@@ -617,6 +698,7 @@ fn glider_api(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Rect>()?;
     m.add_class::<Mode>()?;
     m.add_class::<Tone>()?;
+    m.add_class::<AutoClear>()?;
 
     Ok(())
 }
@@ -757,6 +839,41 @@ mod tests {
         let data = [0x05u8, 0x04, 0x00, 0x00];
         let crc = crc16::State::<crc16::XMODEM>::calculate(&data);
         assert_ne!(crc, 0);
+    }
+
+    // --- AutoClear ---
+
+    #[test]
+    fn autoclear_stores_fields() {
+        let ac = AutoClear::new(1, 2, 0);
+        assert_eq!(ac.mode, 1);
+        assert_eq!(ac.interval, 2);
+        assert_eq!(ac.threshold, 0);
+    }
+
+    #[test]
+    fn autoclear_packet_layout() {
+        let area = Rect::new(0, 0, 0, 0);
+
+        let buf = build_display_packet(USBCMD_SETACMODE, 2, &area);
+        // Byte 0: REPORT_ID_CONTROL = 5
+        assert_eq!(buf[0], 0x05);
+        // Byte 1: USBCMD_SETACMODE = 0x0E
+        assert_eq!(buf[1], 0x0E);
+        // Bytes 2-3: param = 2 little-endian
+        assert_eq!(buf[2], 0x02);
+        assert_eq!(buf[3], 0x00);
+
+        let buf = build_display_packet(USBCMD_SETACINTERVAL, 1, &area);
+        assert_eq!(buf[1], 0x0F);
+        assert_eq!(buf[2], 0x01);
+
+        let buf = build_display_packet(USBCMD_SETACTHRESHOLD, 0, &area);
+        assert_eq!(buf[1], 0x10);
+        assert_eq!(buf[2], 0x00);
+
+        let buf = build_display_packet(USBCMD_GETAC, 0, &area);
+        assert_eq!(buf[1], 0x11);
     }
 
     // --- Tone packets ---
