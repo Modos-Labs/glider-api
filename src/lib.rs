@@ -300,12 +300,8 @@ impl Display {
     /// rejects the command.
     pub fn set_mode(&self, mode: &Mode, area: &Rect) -> PyResult<()> {
         let buf = build_display_packet(USBCMD_SETMODE, *mode as u16, area);
-        let device = self.device.lock().unwrap();
-        device.0.write(&buf).to_py_err()?;
-
-        let mut response: [u8; 32] = [0; 32];
-        device.0.read_timeout(&mut response, 200).to_py_err()?;
-        parse_response(&response)
+        let mut device = self.device.lock().unwrap();
+        transact(&mut device.0, USBCMD_SETMODE, &buf, None)
     }
 
     /// Apply the tone mapping (lightness and contrast) to the display.
@@ -332,17 +328,10 @@ impl Display {
         }
         let area = Rect::new(0, 0, 0, 0);
         let buf = build_display_packet(USBCMD_SETLIGHTNESS, tone.lightness as u16, &area);
-        let lightness_buf = build_display_packet(USBCMD_SETCONTRAST, tone.contrast as u16, &area);
-        let device = self.device.lock().unwrap();
-        device.0.write(&buf).to_py_err()?;
-
-        let mut response: [u8; 32] = [0; 32];
-        device.0.read_timeout(&mut response, 200).to_py_err()?;
-        parse_response(&response)?;
-
-        device.0.write(&lightness_buf).to_py_err()?;
-        device.0.read_timeout(&mut response, 200).to_py_err()?;
-        parse_response(&response)
+        let contrast_buf = build_display_packet(USBCMD_SETCONTRAST, tone.contrast as u16, &area);
+        let mut device = self.device.lock().unwrap();
+        transact(&mut device.0, USBCMD_SETLIGHTNESS, &buf, None)?;
+        transact(&mut device.0, USBCMD_SETCONTRAST, &contrast_buf, None)
     }
 
     /// Read the tone mapping (lightness and contrast) from the controller.
@@ -357,12 +346,9 @@ impl Display {
     pub fn get_tone(&self) -> PyResult<Tone> {
         let area = Rect::new(0, 0, 0, 0);
         let buf = build_display_packet(USBCMD_GETTONE, 0x0000, &area);
-        let device = self.device.lock().unwrap();
-        device.0.write(&buf).to_py_err()?;
-
+        let mut device = self.device.lock().unwrap();
         let mut response: [u8; 32] = [0; 32];
-        device.0.read_timeout(&mut response, 200).to_py_err()?;
-        parse_response(&response)?;
+        transact(&mut device.0, USBCMD_GETTONE, &buf, Some(&mut response))?;
         Ok(Tone::new(response[8] as i8, response[9] as i8))
     }
 
@@ -377,12 +363,9 @@ impl Display {
     pub fn get_mode(&self) -> PyResult<Mode> {
         let area = Rect::new(0, 0, 0, 0);
         let buf = build_display_packet(USBCMD_GETMODE, 0x0000, &area);
-        let device = self.device.lock().unwrap();
-        device.0.write(&buf).to_py_err()?;
-
+        let mut device = self.device.lock().unwrap();
         let mut response: [u8; 32] = [0; 32];
-        device.0.read_timeout(&mut response, 200).to_py_err()?;
-        parse_response(&response)?;
+        transact(&mut device.0, USBCMD_GETMODE, &buf, Some(&mut response))?;
         match response[8] {
             0 => Ok(Mode::ManualLUTNoDither),
             1 => Ok(Mode::ManualLUTErrorDiffusion),
@@ -404,12 +387,9 @@ impl Display {
     pub fn get_signal_status(&self) -> PyResult<u8> {
         let area = Rect::new(0, 0, 0, 0);
         let buf = build_display_packet(USBCMD_GETSIGNAL, 0x0000, &area);
-        let device = self.device.lock().unwrap();
-        device.0.write(&buf).to_py_err()?;
-
+        let mut device = self.device.lock().unwrap();
         let mut response: [u8; 32] = [0; 32];
-        device.0.read_timeout(&mut response, 200).to_py_err()?;
-        parse_response(&response)?;
+        transact(&mut device.0, USBCMD_GETSIGNAL, &buf, Some(&mut response))?;
         Ok(response[8])
     }
 
@@ -449,7 +429,8 @@ fn build_display_packet(cmd: u8, param: u16, area: &Rect) -> BytesMut {
 }
 
 // Firmware prepends REPORT_ID_CONTROL (5) as byte 0 of every response.
-// The return value (USBRET_*) is at byte 1.
+// The return value (USBRET_*) is at byte 1 and the command being answered
+// is echoed at byte 2.
 fn parse_response(response: &[u8]) -> PyResult<()> {
     match response[1] {
         0x00 => Err(PyTypeError::new_err(format!(
@@ -466,6 +447,37 @@ fn parse_response(response: &[u8]) -> PyResult<()> {
         ))),
         _ => Ok(()),
     }
+}
+
+// Send a command and read its response, retrying once if the response does
+// not echo the command being answered. Other HID readers (e.g. a second
+// client polling the device) can consume one of our responses; the retry
+// re-syncs request/response pairing. `payload_out` receives the raw
+// response for callers that need the getter payload bytes.
+fn transact(
+    device: &mut hidapi::HidDevice,
+    cmd: u8,
+    buf: &[u8],
+    payload_out: Option<&mut [u8; 32]>,
+) -> PyResult<()> {
+    let mut response: [u8; 32] = [0; 32];
+    for attempt in 0..2 {
+        device.write(buf).to_py_err()?;
+        device.read_timeout(&mut response, 200).to_py_err()?;
+        if response[2] == cmd {
+            parse_response(&response)?;
+            if let Some(out) = payload_out {
+                *out = response;
+            }
+            return Ok(());
+        }
+        // Response belongs to another command's request; retry once.
+        let _ = attempt;
+    }
+    Err(PyTypeError::new_err(format!(
+        "no valid response to command 0x{:02x} (responses were for other commands; is another client using the display?)",
+        cmd
+    )))
 }
 
 // C API
