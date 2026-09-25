@@ -37,3 +37,7 @@ path = "examples/rust/multi_zone.rs"
 [[example]]
 name = "error_handling"
 path = "examples/rust/error_handling.rs"
+
+[[example]]
+name = "standby"
+path = "examples/rust/standby.rs"

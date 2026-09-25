@@ -102,6 +102,8 @@ pub enum Mode {
 }
 
 const REPORT_ID_CONTROL: u8 = 5;
+const USBCMD_POWERDOWN: u8 = 0x01;
+const USBCMD_POWERUP:   u8 = 0x02;
 const USBCMD_REDRAW: u8 = 0x04;
 const USBCMD_SETMODE: u8 = 0x05;
 
@@ -294,6 +296,37 @@ impl Display {
         device.0.read_timeout(&mut response, 200).to_py_err()?;
         parse_response(&response)
     }
+
+    /// Put the display into standby, blanking the panel and reducing power draw.
+    ///
+    /// The display stops updating until [`Display::exit_standby`] is called.
+    /// Call [`Display::exit_standby`] to resume normal operation.
+    ///
+    /// Raises `TypeError` on USB communication errors or if the firmware
+    /// rejects the command.
+    pub fn enter_standby(&self) -> PyResult<()> {
+        let buf = build_display_packet(USBCMD_POWERDOWN, 0x0000, &Rect::new(0, 0, 0, 0));
+        let device = self.device.lock().unwrap();
+        device.0.write(&buf).to_py_err()?;
+
+        let mut response: [u8; 16] = [0; 16];
+        device.0.read_timeout(&mut response, 200).to_py_err()?;
+        parse_response(&response)
+    }
+
+    /// Wake the display from standby and resume normal operation.
+    ///
+    /// Raises `TypeError` on USB communication errors or if the firmware
+    /// rejects the command.
+    pub fn exit_standby(&self) -> PyResult<()> {
+        let buf = build_display_packet(USBCMD_POWERUP, 0x0000, &Rect::new(0, 0, 0, 0));
+        let device = self.device.lock().unwrap();
+        device.0.write(&buf).to_py_err()?;
+
+        let mut response: [u8; 16] = [0; 16];
+        device.0.read_timeout(&mut response, 200).to_py_err()?;
+        parse_response(&response)
+    }
 }
 
 fn build_display_packet(cmd: u8, param: u16, area: &Rect) -> BytesMut {
@@ -387,6 +420,28 @@ pub extern "C" fn glider_redraw(d: *mut Display, area: Rect) -> Response {
         return Response::Failure;
     }
     unsafe { &*d }.redraw(&area).into()
+}
+
+/// Put the display into standby, blanking the panel and reducing power draw.
+///
+/// Returns `SUCCESS` (85) on success or `FAILURE` (0) on error.
+#[no_mangle]
+pub extern "C" fn glider_enter_standby(d: *mut Display) -> Response {
+    if d.is_null() {
+        return Response::Failure;
+    }
+    unsafe { &*d }.enter_standby().into()
+}
+
+/// Wake the display from standby and resume normal operation.
+///
+/// Returns `SUCCESS` (85) on success or `FAILURE` (0) on error.
+#[no_mangle]
+pub extern "C" fn glider_exit_standby(d: *mut Display) -> Response {
+    if d.is_null() {
+        return Response::Failure;
+    }
+    unsafe { &*d }.exit_standby().into()
 }
 
 #[pymodule]
