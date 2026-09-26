@@ -39,7 +39,6 @@ safety — see **[INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md)**.
 ### Prerequisites:
 - Python 3.12+
 - Rust (tested with 1.89.0)
-- Sphinx (for doc generation)
 - Linux only: pkgconfig and libudev-dev
 
 To install the API, clone this directory and run:
@@ -48,12 +47,22 @@ cd glider-api
 pip install .
 ```
 
+The build backend (`maturin`) is pinned exactly, and the Cargo dependencies
+are locked via the committed `Cargo.lock`, so builds are reproducible. For a
+fully hash-verified install (no build isolation, digests checked against the
+official PyPI values), use:
+```shell
+cd glider-api
+python -m pip install --require-hashes -r requirements-build.txt
+python -m pip install --no-build-isolation --no-deps .
+```
+When building the Rust library directly, use `cargo build --locked`.
+
 To generate the documentation, you'll need to set up a virtual environment with `glider-api` installed, and then run one of the Sphinx `make` options:
 ```shell
 python -m venv ./venv
 ./venv/scripts/activate # or `source venv/bin/activate`
-pip install maturin
-pip install myst-parser
+pip install '.[docs]'
 maturin develop
 make html
 ```

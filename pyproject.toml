@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.8,<2.0", "myst-parser>=4.0.1", "Sphinx>=8.2.3"]
+requires = ["maturin==1.15.0"]
 build-backend = "maturin"
 
 [project]
@@ -12,6 +12,12 @@ classifiers = [
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dynamic = ["version"]
+
+[project.optional-dependencies]
+# Documentation-only tooling (Sphinx + myst-parser). Not needed to build or
+# install the package — install with `pip install '.[docs]'` only when
+# regenerating the Sphinx documentation.
+docs = ["myst-parser>=4.0.1", "Sphinx>=8.2.3"]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
